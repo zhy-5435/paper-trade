@@ -7,7 +7,7 @@
 USE stock_sim;
 
 -- ------------------------------------------------------------
--- 13. stock_price_tick 分时行情快照表（选做：行情分时数据）
+-- 14. stock_price_tick 分时行情快照表（选做：行情分时数据）
 --     数据量增长快，正式环境按 tick_time 月分表并冷归档
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS stock_price_tick (
@@ -22,7 +22,7 @@ CREATE TABLE IF NOT EXISTS stock_price_tick (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='分时行情快照表';
 
 -- ------------------------------------------------------------
--- 14. order_status_log 订单状态变更日志
+-- 15. order_status_log 订单状态变更日志
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS order_status_log (
   id          BIGINT      NOT NULL COMMENT '主键，雪花ID',
@@ -38,14 +38,14 @@ CREATE TABLE IF NOT EXISTS order_status_log (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='订单状态变更日志';
 
 -- ------------------------------------------------------------
--- 15. risk_rule 风控规则配置表（选做：基础风控）
+-- 16. risk_rule 风控规则配置表（选做：基础风控）
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS risk_rule (
   id              BIGINT        NOT NULL COMMENT '主键，雪花ID',
   rule_code       VARCHAR(32)   NOT NULL COMMENT '规则编码',
   rule_name       VARCHAR(50)   NOT NULL COMMENT '规则名称',
   rule_type       TINYINT       NOT NULL COMMENT '类型：1单笔限额 2单日累计 3单股持仓占比',
-  threshold_value DECIMAL(20,2) NOT NULL COMMENT '阈值',
+  threshold_value DECIMAL(20,4) NOT NULL COMMENT '阈值（金额类单位元；占比类为小数，如0.2000，4位精度对齐比率约定）',
   status          TINYINT       NOT NULL DEFAULT 1 COMMENT '状态：1启用 0禁用',
   create_time     DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   update_time     DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS risk_rule (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='风控规则配置表';
 
 -- ------------------------------------------------------------
--- 16. sys_operation_log 系统操作审计日志
+-- 17. sys_operation_log 系统操作审计日志
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS sys_operation_log (
   id             BIGINT      NOT NULL COMMENT '主键，雪花ID',

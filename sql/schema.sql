@@ -1,5 +1,5 @@
 -- ============================================================
--- paper-trade 第一轮单库建表脚本（核心 12 张表）
+-- paper-trade 第一轮单库建表脚本（核心 13 张表）
 -- 适用：MySQL 8.0.16+ / InnoDB / utf8mb4（CHECK 约束强制生效）
 -- 特性：CREATE TABLE IF NOT EXISTS，可重复执行
 -- 对应文档：docs/03-数据库设计.md
@@ -62,17 +62,18 @@ CREATE TABLE IF NOT EXISTS stock_quote (
   id               BIGINT        NOT NULL COMMENT '主键，雪花ID',
   stock_code       VARCHAR(10)   NOT NULL COMMENT '股票代码',
   trade_date       DATE          NOT NULL COMMENT '交易日（日切重置依据）',
-  pre_close_price  DECIMAL(18,4) DEFAULT NULL COMMENT '昨收价',
-  open_price       DECIMAL(18,4) DEFAULT NULL COMMENT '今开价',
+  pre_close_price  DECIMAL(18,4) NOT NULL COMMENT '昨收价（首日初始化=发行价）',
+  open_price       DECIMAL(18,4) DEFAULT NULL COMMENT '今开价（日切后首笔行情前为空）',
   latest_price     DECIMAL(18,4) NOT NULL COMMENT '最新成交价',
   high_price       DECIMAL(18,4) DEFAULT NULL COMMENT '当日最高价',
   low_price        DECIMAL(18,4) DEFAULT NULL COMMENT '当日最低价',
-  limit_up_price   DECIMAL(18,4) DEFAULT NULL COMMENT '涨停价',
-  limit_down_price DECIMAL(18,4) DEFAULT NULL COMMENT '跌停价',
+  limit_up_price   DECIMAL(18,4) NOT NULL COMMENT '涨停价（下单校验直读，初始化/日切必算）',
+  limit_down_price DECIMAL(18,4) NOT NULL COMMENT '跌停价（下单校验直读，初始化/日切必算）',
   total_volume     BIGINT        NOT NULL DEFAULT 0 COMMENT '当日累计成交量（股）',
   total_amount     DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '当日累计成交额',
   change_ratio     DECIMAL(10,4) NOT NULL DEFAULT 0.0000 COMMENT '涨跌幅',
   quote_time       DATETIME(3)   NOT NULL COMMENT '行情生成时间',
+  version          INT           NOT NULL DEFAULT 0 COMMENT '乐观锁版本号（定时刷新与手动刷新并发CAS）',
   create_time      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   update_time      DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (id),
@@ -109,6 +110,7 @@ CREATE TABLE IF NOT EXISTS fund_flow (
   flow_no        VARCHAR(32)   NOT NULL COMMENT '流水号（幂等键）',
   user_id        BIGINT        NOT NULL COMMENT '用户ID（分片键）',
   account_id     BIGINT        NOT NULL COMMENT '账户ID',
+  request_id     VARCHAR(64)   DEFAULT NULL COMMENT '客户端幂等号（入金/出金必传；订单冻结与MQ记账流水为空，唯一键允许多NULL）',
   flow_type      TINYINT       NOT NULL COMMENT '类型：1入金 2出金 3冻结 4解冻 5买入扣款 6卖出入账 7手续费 8清算调整',
   change_balance DECIMAL(20,2) NOT NULL COMMENT '余额变动（正入负出）',
   change_frozen  DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '冻结额度变动',
@@ -122,8 +124,10 @@ CREATE TABLE IF NOT EXISTS fund_flow (
   create_time    DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记账时间',
   PRIMARY KEY (id),
   UNIQUE KEY uk_flow_no (flow_no),
+  UNIQUE KEY uk_user_request (user_id, request_id),
   KEY idx_user_time (user_id, create_time),
-  KEY idx_biz_no (biz_no)
+  KEY idx_biz_no (biz_no),
+  CONSTRAINT chk_fund_flow_balance CHECK (balance_after = balance_before + change_balance AND frozen_after = frozen_before + change_frozen AND balance_after >= 0 AND frozen_after >= 0 AND frozen_after <= balance_after)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='资金流水表（只追加）';
 
 -- ------------------------------------------------------------
@@ -148,7 +152,7 @@ CREATE TABLE IF NOT EXISTS user_position (
   deleted        TINYINT       NOT NULL DEFAULT 0 COMMENT '逻辑删除：0未删 1已删',
   PRIMARY KEY (id),
   UNIQUE KEY uk_user_stock (user_id, stock_code),
-  CONSTRAINT chk_position_qty CHECK (total_qty >= 0 AND frozen_qty >= 0 AND today_buy_qty >= 0 AND frozen_qty <= total_qty)
+  CONSTRAINT chk_position_qty CHECK (total_qty >= 0 AND frozen_qty >= 0 AND today_buy_qty >= 0 AND cost_amount >= 0 AND frozen_qty + today_buy_qty <= total_qty)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='持仓表';
 
 -- ------------------------------------------------------------
@@ -159,19 +163,23 @@ CREATE TABLE IF NOT EXISTS position_flow (
   flow_no           VARCHAR(32)   NOT NULL COMMENT '流水号（幂等键）',
   user_id           BIGINT        NOT NULL COMMENT '用户ID（分片键）',
   stock_code        VARCHAR(10)   NOT NULL COMMENT '股票代码',
-  change_type       TINYINT       NOT NULL COMMENT '类型：1买入 2卖出 3清算调整',
-  change_qty        BIGINT        NOT NULL COMMENT '变动股数，正增负减',
-  deal_price        DECIMAL(18,4) NOT NULL COMMENT '成交价格',
+  change_type       TINYINT       NOT NULL COMMENT '类型：1买入 2卖出 3清算调整 4冻结 5解冻',
+  change_qty        BIGINT        NOT NULL COMMENT '变动股数，正增负减（冻结/解冻为0）',
+  change_frozen     BIGINT        NOT NULL DEFAULT 0 COMMENT '冻结股数变动，正冻负解（买入为0，卖出成交同步解冻）',
+  deal_price        DECIMAL(18,4) DEFAULT NULL COMMENT '成交价格（冻结/解冻/清算调整为空）',
   total_qty_before  BIGINT        NOT NULL COMMENT '变动前持仓',
   total_qty_after   BIGINT        NOT NULL COMMENT '变动后持仓',
+  frozen_qty_before BIGINT        NOT NULL DEFAULT 0 COMMENT '变动前冻结股数',
+  frozen_qty_after  BIGINT        NOT NULL DEFAULT 0 COMMENT '变动后冻结股数',
   cost_before       DECIMAL(20,2) NOT NULL COMMENT '变动前成本',
   cost_after        DECIMAL(20,2) NOT NULL COMMENT '变动后成本',
-  biz_no            VARCHAR(32)   DEFAULT NULL COMMENT '关联成交号/订单号',
+  biz_no            VARCHAR(32)   DEFAULT NULL COMMENT '关联成交号/订单号/批次号',
   create_time       DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '记账时间',
   PRIMARY KEY (id),
   UNIQUE KEY uk_flow_no (flow_no),
   KEY idx_user_stock_time (user_id, stock_code, create_time),
-  KEY idx_biz_no (biz_no)
+  KEY idx_biz_no (biz_no),
+  CONSTRAINT chk_position_flow_qty CHECK (total_qty_after = total_qty_before + change_qty AND frozen_qty_after = frozen_qty_before + change_frozen AND total_qty_after >= 0 AND frozen_qty_after >= 0 AND cost_after >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='持仓变动流水表（只追加）';
 
 -- ------------------------------------------------------------
@@ -181,21 +189,22 @@ CREATE TABLE IF NOT EXISTS trade_order (
   id            BIGINT        NOT NULL COMMENT '主键，雪花ID',
   order_no      VARCHAR(32)   NOT NULL COMMENT '订单号（幂等键）',
   user_id       BIGINT        NOT NULL COMMENT '用户ID（分片键）',
-  request_id    VARCHAR(32)   NOT NULL COMMENT '客户端幂等号（防重复提交）',
+  request_id    VARCHAR(64)   NOT NULL COMMENT '客户端幂等号（UUID，防重复提交）',
   trade_date    DATE          NOT NULL COMMENT '交易日（撤单/对账归属）',
   stock_code    VARCHAR(10)   NOT NULL COMMENT '股票代码',
   direction     TINYINT       NOT NULL COMMENT '方向：1买入 2卖出',
   order_type    TINYINT       NOT NULL DEFAULT 1 COMMENT '类型：1限价 2市价（预留）',
   entrust_price DECIMAL(18,4) NOT NULL COMMENT '委托价格',
   entrust_qty   BIGINT        NOT NULL COMMENT '委托数量',
-  matched_qty   BIGINT        NOT NULL DEFAULT 0 COMMENT '已成交数量',
-  frozen_amount DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '买单冻结资金（含预估手续费）',
-  frozen_qty    BIGINT        NOT NULL DEFAULT 0 COMMENT '卖单冻结股数',
+  matched_qty    BIGINT        NOT NULL DEFAULT 0 COMMENT '已成交数量',
+  matched_amount DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '累计成交金额（对账用，与日汇总同事务累加）',
+  frozen_amount  DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '买单冻结资金（含预估手续费，卖单恒为0）',
+  frozen_qty     BIGINT        NOT NULL DEFAULT 0 COMMENT '卖单冻结股数（买单恒为0）',
   fee_amount    DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '累计实际手续费',
   status        TINYINT       NOT NULL DEFAULT 1 COMMENT '状态：1待撮合 2部分成交 3全部成交 4已撤单 5部分成交后撤单 6已过期',
   expire_time   DATETIME(3)   DEFAULT NULL COMMENT '有效期截止时间',
-  reject_reason VARCHAR(200)  DEFAULT NULL COMMENT '校验拒绝或撤单原因',
-  source        TINYINT       NOT NULL DEFAULT 1 COMMENT '委托终端',
+  reject_reason VARCHAR(200)  DEFAULT NULL COMMENT '撤单/过期原因（校验拒绝不落单，直接返回错误码）',
+  source        TINYINT       NOT NULL DEFAULT 1 COMMENT '委托终端：1Web 2App（预留） 3管理端（预留）',
   version       INT           NOT NULL DEFAULT 0 COMMENT '乐观锁版本号',
   create_time   DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   update_time   DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
@@ -205,7 +214,8 @@ CREATE TABLE IF NOT EXISTS trade_order (
   UNIQUE KEY uk_user_request (user_id, request_id),
   KEY idx_user_status_time (user_id, status, create_time),
   KEY idx_stock_status (stock_code, status),
-  CONSTRAINT chk_order_qty CHECK (entrust_qty > 0 AND matched_qty >= 0 AND matched_qty <= entrust_qty)
+  KEY idx_trade_date_status (trade_date, status),
+  CONSTRAINT chk_order_qty CHECK (entrust_qty > 0 AND matched_qty >= 0 AND matched_qty <= entrust_qty AND matched_amount >= 0 AND frozen_amount >= 0 AND frozen_qty >= 0 AND fee_amount >= 0 AND ((direction = 1 AND frozen_qty = 0) OR (direction = 2 AND frozen_amount = 0)))
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='交易订单表';
 
 -- ------------------------------------------------------------
@@ -222,10 +232,11 @@ CREATE TABLE IF NOT EXISTS deal_record (
   seller_order_no VARCHAR(32)   NOT NULL COMMENT '卖方订单号',
   buyer_user_id   BIGINT        NOT NULL COMMENT '买方用户ID',
   seller_user_id  BIGINT        NOT NULL COMMENT '卖方用户ID',
-  deal_seq        BIGINT        NOT NULL COMMENT '撮合全局序号',
+  deal_seq        BIGINT        NOT NULL COMMENT '撮合全局序号（uk_deal_seq兜底，重启MAX恢复走索引）',
   deal_time       DATETIME(3)   NOT NULL COMMENT '成交时间（时间分表键）',
   PRIMARY KEY (id),
   UNIQUE KEY uk_deal_no (deal_no),
+  UNIQUE KEY uk_deal_seq (deal_seq),
   KEY idx_buyer_time (buyer_user_id, deal_time),
   KEY idx_seller_time (seller_user_id, deal_time),
   KEY idx_stock_time (stock_code, deal_time),
@@ -241,6 +252,7 @@ CREATE TABLE IF NOT EXISTS settlement_batch (
   batch_no         VARCHAR(32) NOT NULL COMMENT '批次号',
   trade_date       DATE        NOT NULL COMMENT '交易日（幂等重跑依据）',
   status           TINYINT     NOT NULL DEFAULT 1 COMMENT '状态：1执行中 2成功 3部分异常 4失败',
+  settle_step      TINYINT     NOT NULL DEFAULT 0 COMMENT '已完成步骤：0未开始 1停止行情 2撤单解冻 3行情日切 4T+1解冻 5盈亏快照 6三方对账 7完成（中断重跑从下一步续做）',
   total_user_count INT         NOT NULL DEFAULT 0 COMMENT '清算用户数',
   diff_count       INT         NOT NULL DEFAULT 0 COMMENT '异常笔数',
   start_time       DATETIME(3) DEFAULT NULL COMMENT '开始时间',
@@ -258,9 +270,10 @@ CREATE TABLE IF NOT EXISTS settlement_batch (
 -- ------------------------------------------------------------
 CREATE TABLE IF NOT EXISTS user_asset_snapshot (
   id            BIGINT        NOT NULL COMMENT '主键，雪花ID',
+  batch_no      VARCHAR(32)   NOT NULL COMMENT '产出批次号（关联settlement_batch，重跑追溯）',
   user_id       BIGINT        NOT NULL COMMENT '用户ID（预留分片键）',
   trade_date    DATE          NOT NULL COMMENT '快照日期',
-  cash_balance  DECIMAL(20,2) NOT NULL COMMENT '现金余额',
+  cash_balance  DECIMAL(20,2) NOT NULL COMMENT '现金余额（=user_account.balance口径，日终冻结应为0）',
   market_value  DECIMAL(20,2) NOT NULL COMMENT '持仓市值',
   total_asset   DECIMAL(20,2) NOT NULL COMMENT '总资产',
   cost_amount   DECIMAL(20,2) NOT NULL COMMENT '持仓成本',
@@ -268,7 +281,9 @@ CREATE TABLE IF NOT EXISTS user_asset_snapshot (
   pnl_ratio     DECIMAL(10,4) NOT NULL COMMENT '盈亏比例',
   create_time   DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '生成时间',
   PRIMARY KEY (id),
-  UNIQUE KEY uk_user_date (user_id, trade_date)
+  UNIQUE KEY uk_user_date (user_id, trade_date),
+  KEY idx_batch_no (batch_no),
+  CONSTRAINT chk_snapshot_asset CHECK (cash_balance >= 0 AND total_asset = cash_balance + market_value AND floating_pnl = market_value - cost_amount AND market_value >= 0 AND cost_amount >= 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='日终资产快照表';
 
 -- ------------------------------------------------------------
@@ -280,7 +295,7 @@ CREATE TABLE IF NOT EXISTS reconcile_diff (
   trade_date     DATE         NOT NULL COMMENT '交易日',
   user_id        BIGINT       NOT NULL COMMENT '异常用户ID',
   diff_type      TINYINT      NOT NULL COMMENT '类型：1资金差异 2持仓差异 3订单状态差异',
-  biz_no         VARCHAR(32)  DEFAULT NULL COMMENT '关联单号',
+  biz_no         VARCHAR(32)  NOT NULL DEFAULT '' COMMENT '关联单号（账户级差异为空串，保证幂等键有效）',
   expect_value   VARCHAR(100) DEFAULT NULL COMMENT '期望值',
   actual_value   VARCHAR(100) DEFAULT NULL COMMENT '实际值',
   status         TINYINT      NOT NULL DEFAULT 1 COMMENT '状态：1待处理 2已处理 3误报关闭',
@@ -290,7 +305,28 @@ CREATE TABLE IF NOT EXISTS reconcile_diff (
   create_time    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
   update_time    DATETIME(3)  NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
   PRIMARY KEY (id),
+  UNIQUE KEY uk_batch_user_type_biz (batch_no, user_id, diff_type, biz_no),
   KEY idx_status (status),
-  KEY idx_batch (batch_no),
   KEY idx_user_id (user_id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='对账异常表';
+
+-- ------------------------------------------------------------
+-- 13. deal_order_daily 订单成交日汇总表（按 user_id 分库，与订单同库同算法）
+--     成交回报消费端在订单所在库同事务累加，日终三方对账不跨库；
+--     重放消息被同事务 uk_flow_no 拦截，汇总不会重复累加
+-- ------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS deal_order_daily (
+  id          BIGINT        NOT NULL COMMENT '主键，雪花ID',
+  trade_date  DATE          NOT NULL COMMENT '交易日（取订单 trade_date，对账归属）',
+  user_id     BIGINT        NOT NULL COMMENT '用户ID（分片键）',
+  order_no    VARCHAR(32)   NOT NULL COMMENT '订单号',
+  deal_qty    BIGINT        NOT NULL DEFAULT 0 COMMENT '当日累计成交数量（股）',
+  deal_amount DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '当日累计成交金额',
+  fee_amount  DECIMAL(20,2) NOT NULL DEFAULT 0.00 COMMENT '当日累计实际手续费',
+  create_time DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) COMMENT '创建时间',
+  update_time DATETIME(3)   NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3) COMMENT '更新时间',
+  PRIMARY KEY (id),
+  UNIQUE KEY uk_user_date_order (user_id, trade_date, order_no),
+  KEY idx_trade_date (trade_date),
+  CONSTRAINT chk_deal_daily CHECK (deal_qty >= 0 AND deal_amount >= 0 AND fee_amount >= 0)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci COMMENT='订单成交日汇总表（对账用，成交回报同事务累加）';
