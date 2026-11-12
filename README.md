@@ -18,9 +18,10 @@
 
 - `sql/schema.sql`：核心 13 表 DDL（第一轮单库，`IF NOT EXISTS` 可重复执行）
 - `sql/schema_ext.sql`：扩展 4 表 DDL（随轮次启用）
+- `sql/seed.sql`：演示种子数据（5 只股票 + 行情初始化 + 管理员/测试用户，`INSERT IGNORE` 可重复执行）
 
 ## 开发轮次
 
 1. **单库基础业务**（无中间件，内存撮合）→ 2. **Redis / RocketMQ 接入** → 3. **分库分表与主从** → 4. **清算对账与压测**
 
-技术栈：JDK 17 · Spring Boot 3.2 · MyBatis-Plus · MySQL 8.0 · Redis 7 · RocketMQ 4.9 · ShardingSphere-JDBC 5.5
+技术栈：JDK 21 · Spring Boot 3.2 · MyBatis-Plus · MySQL 8.0 · Redis 7 · RocketMQ 4.9 · ShardingSphere-JDBC 5.5
