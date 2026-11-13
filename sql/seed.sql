@@ -3,6 +3,8 @@
 -- 前置：先执行 schema.sql
 -- 账号：admin/admin123（管理员）、user01/123456、user02/123456（测试用户）
 -- 说明：股票名称/价格为演示固定值，非实时数据；低价股保证 1 手 500~6000 元
+--       user02 为初始持仓方（撮合对手盘）：600000 1000 股 + 000007 100 股，
+--       today_buy_qty=0 保证即日可卖；同步注入持仓流水保证对账勾稽
 -- ============================================================
 
 USE stock_sim;
@@ -45,3 +47,23 @@ INSERT IGNORE INTO sys_user (id, username, password, nickname, role, status) VAL
 INSERT IGNORE INTO user_account (id, user_id, account_no) VALUES
   (1, 2, 'A0000000000000000002'),
   (2, 3, 'A0000000000000000003');
+
+-- ------------------------------------------------------------
+-- 5. 测试用户初始持仓（撮合验收的对手盘来源，见 docs/07 R1）
+--    user02 持有 600000 1000 股（成本=发行价）与 000007 100 股（零股卖出用例）
+--    today_buy_qty=0：非当日买入，即日可卖
+-- ------------------------------------------------------------
+INSERT IGNORE INTO user_position
+  (id, user_id, stock_code, total_qty, frozen_qty, today_buy_qty, cost_amount, avg_cost_price)
+VALUES
+  (1, 3, '600000', 1000, 0, 0, 10000.00, 10.0000),
+  (2, 3, '000007',  100, 0, 0,   500.00,  5.0000);
+
+-- 初始持仓同步落流水（change_type=3 清算调整，biz_no=SEED），保证 Σ流水=持仓 可对账
+INSERT IGNORE INTO position_flow
+  (id, flow_no, user_id, stock_code, change_type, change_qty, change_frozen,
+   total_qty_before, total_qty_after, frozen_qty_before, frozen_qty_after,
+   cost_before, cost_after, biz_no)
+VALUES
+  (1, 'SEED0000000000000001', 3, '600000', 3, 1000, 0, 0, 1000, 0, 0, 0.00, 10000.00, 'SEED'),
+  (2, 'SEED0000000000000002', 3, '000007', 3,  100, 0, 0,  100, 0, 0, 0.00,   500.00, 'SEED');
