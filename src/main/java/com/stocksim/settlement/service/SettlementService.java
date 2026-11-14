@@ -35,7 +35,7 @@ import java.util.concurrent.locks.ReentrantLock;
 import java.util.stream.Collectors;
 
 /**
- * 第一轮最小日切（07§6.8，幂等可重跑 P6）：过期撤单解冻 → 行情日切 → T+1 清零。
+ * 第一轮最小日切（R1规划§6.8，幂等可重跑 P6）：过期撤单解冻 → 行情日切 → T+1 清零。
  * 本轮唯一实现类，第四轮原地扩展七步（不搬家、不写 settlement_batch）。
  */
 @Service

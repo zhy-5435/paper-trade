@@ -97,7 +97,7 @@ class MatchEngineTest {
 
     @Test
     void dealPriceIsRestingOrderPrice() {
-        // user02 先挂卖 @9.90，user01 后挂买 @10.10 → 成交 @9.90（07§6.4）
+        // user02 先挂卖 @9.90，user01 后挂买 @10.10 → 成交 @9.90（R1规划§6.4）
         engine.bookOf(STOCK).add(bookOrder(2, "S1", 2L, 2, "9.90", 100, T0));
         engine.bookOf(STOCK).add(bookOrder(1, "B1", 1L, 1, "10.10", 100, T0.plusSeconds(1)));
         engine.onNewOrder(STOCK, "B1");

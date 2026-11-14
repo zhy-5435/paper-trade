@@ -5,7 +5,7 @@ import org.springframework.stereotype.Component;
 import java.util.concurrent.atomic.AtomicLong;
 
 /**
- * 撮合全局序号：单机 AtomicLong，启动取 DB MAX(deal_seq)（07§6.7）。
+ * 撮合全局序号：单机 AtomicLong，启动取 DB MAX(deal_seq)（R1规划§6.7）。
  * next() 预分配，记账失败留空洞可接受；commit() 推进已提交水位。
  */
 @Component

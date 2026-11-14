@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 撮合引擎：每股 ReentrantLock 串行 + 内存盘口（07§6.6）。
+ * 撮合引擎：每股 ReentrantLock 串行 + 内存盘口（R1规划§6.6）。
  * 下单 T1 提交后 AFTER_COMMIT 触发；每笔成交一个 T2，记账成功才扣减盘口、推进 deal_seq。
  */
 @Component
@@ -58,7 +58,7 @@ public class MatchEngine {
         this.dealSeq = dealSeq;
     }
 
-    /** 启动重建（07§6.7）：deal_seq 取 DB MAX，未成交完的挂单按 create_time 入盘，不重放记账 */
+    /** 启动重建（R1规划§6.7）：deal_seq 取 DB MAX，未成交完的挂单按 create_time 入盘，不重放记账 */
     @PostConstruct
     public void rebuild() {
         Long max = dealRecordMapper.selectMaxDealSeq();

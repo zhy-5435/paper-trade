@@ -8,7 +8,7 @@ import java.util.Map;
 import java.util.NavigableMap;
 import java.util.TreeMap;
 
-/** 买单降序/卖单升序 TreeMap，同价 FIFO（07§6.6） */
+/** 买单降序/卖单升序 TreeMap，同价 FIFO（R1规划§6.6） */
 public class InMemoryOrderBook implements OrderBook {
 
     private final NavigableMap<BigDecimal, ArrayDeque<BookOrder>> bids = new TreeMap<>(Comparator.reverseOrder());

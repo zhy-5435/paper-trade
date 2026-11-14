@@ -28,7 +28,7 @@ import java.time.LocalDateTime;
 
 /**
  * 第一轮同步回报：一笔成交一个本地事务（T2），deal_record + 买卖双方记账 + 日汇总 + 行情量额。
- * 重放/重试被 uk_deal_no / uk_flow_no 拦截整体回滚（07§6.5、R3）。
+ * 重放/重试被 uk_deal_no / uk_flow_no 拦截整体回滚（R1规划§6.5、R3）。
  */
 @Component
 public class SyncDealNotify implements DealNotify {
