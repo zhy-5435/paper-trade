@@ -1,0 +1,48 @@
+# 第二轮 RocketMQ 4.9.x 本地演示部署（M0）
+# 要点：brokerIP1=127.0.0.1（Windows 端口映射必需，R1）；broker 堆 512m / namesrv 256m（R11，两容器合计 ≤1G）
+# 镜像源：~/.docker/daemon.json 已配 DaoCloud 主 + 1ms.run 备
+services:
+  namesrv:
+    image: apache/rocketmq:4.9.5
+    container_name: stocksim-rmqnamesrv
+    ports:
+      - "9876:9876"
+    command: sh mqnamesrv
+    environment:
+      JAVA_OPT_EXT: "-server -Xms256m -Xmx256m -Xmn128m"
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/9876' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+    networks:
+      - rocketmq
+
+  broker:
+    image: apache/rocketmq:4.9.5
+    container_name: stocksim-rmqbroker
+    ports:
+      - "10909:10909"
+      - "10911:10911"
+      - "10912:10912"
+    command: sh mqbroker -n namesrv:9876 -c /home/rocketmq/broker.conf
+    environment:
+      JAVA_OPT_EXT: "-server -Xms512m -Xmx512m -Xmn256m"
+    volumes:
+      - ./broker.conf:/home/rocketmq/broker.conf:ro
+    depends_on:
+      namesrv:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD-SHELL", "bash -c 'echo > /dev/tcp/127.0.0.1/10911' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    networks:
+      - rocketmq
+
+networks:
+  rocketmq:
+    driver: bridge

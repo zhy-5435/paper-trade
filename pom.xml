@@ -23,6 +23,8 @@
     <jjwt.version>0.12.6</jjwt.version>
     <knife4j.version>4.4.0</knife4j.version>
     <hutool.version>5.8.29</hutool.version>
+    <redisson.version>3.25.0</redisson.version>
+    <rocketmq-spring.version>2.3.1</rocketmq-spring.version>
   </properties>
 
   <dependencies>
@@ -84,6 +86,19 @@
       <groupId>cn.hutool</groupId>
       <artifactId>hutool-all</artifactId>
       <version>${hutool.version}</version>
+    </dependency>
+
+    <!-- 3.25.0 对应 redisson-spring-data-32，适配 Boot 3.2 / Redis 5.0+（R8） -->
+    <dependency>
+      <groupId>org.redisson</groupId>
+      <artifactId>redisson-spring-boot-starter</artifactId>
+      <version>${redisson.version}</version>
+    </dependency>
+    <!-- 2.3.1 为 jakarta 线，适配 Boot 3.2（02§二） -->
+    <dependency>
+      <groupId>org.apache.rocketmq</groupId>
+      <artifactId>rocketmq-spring-boot-starter</artifactId>
+      <version>${rocketmq-spring.version}</version>
     </dependency>
 
     <dependency>

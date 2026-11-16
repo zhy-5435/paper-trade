@@ -18,6 +18,17 @@ spring:
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss.SSS
     time-zone: Asia/Shanghai
+  data:
+    redis:
+      host: localhost
+      port: 6379
+      timeout: 3000ms
+
+rocketmq:
+  name-server: 127.0.0.1:9876
+  producer:
+    group: stocksim-producer
+    send-message-timeout: 3000
 
 mybatis-plus:
   mapper-locations: classpath*:mapper/**/*.xml
@@ -54,3 +65,27 @@ stocksim:
   quote:
     refresh-interval-ms: 3000
     walk-step-ratio: 0.002
+  deal:
+    # 成交回报实现切换：sync|mq（Q11）。M0 先置 sync 保第一轮基线不变，M4 起默认 mq
+    notify: sync
+  cache:
+    quote-ttl-ms: 3000
+    quote-ttl-jitter-ms: 1000
+    stock-ttl-ms: 1800000
+    bloom-expected-insertions: 10000
+    bloom-false-probability: 0.01
+    delayed-double-delete-ms: 1000
+  rate-limit:
+    enabled: true
+    order-per-second: 5
+    quote-per-second: 20
+  mq:
+    topic: STOCKSIM_DEAL_BOOKING
+    buy-tag: BUY
+    sell-tag: SELL
+    buy-consumer-group: stocksim-buy-consumer
+    sell-consumer-group: stocksim-sell-consumer
+    max-reconsume-times: 5
+    compensate-interval-ms: 60000
+    compensate-window-minutes: 10
+    test-mode: false
