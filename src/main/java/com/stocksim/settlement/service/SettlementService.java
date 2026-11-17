@@ -7,6 +7,8 @@ import com.stocksim.common.BizException;
 import com.stocksim.common.BizNoGenerator;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
+import com.stocksim.common.cache.CacheKeys;
+import com.stocksim.common.cache.RedisCacheClient;
 import com.stocksim.match.engine.MatchEngine;
 import com.stocksim.order.entity.TradeOrder;
 import com.stocksim.order.mapper.TradeOrderMapper;
@@ -54,12 +56,13 @@ public class SettlementService {
     private final OrderService orderService;
     private final MatchEngine matchEngine;
     private final TransactionTemplate transactionTemplate;
+    private final RedisCacheClient cacheClient;
 
     public SettlementService(TradeOrderMapper tradeOrderMapper, StockQuoteMapper stockQuoteMapper,
                              StockInfoMapper stockInfoMapper, UserPositionMapper userPositionMapper,
                              AccountService accountService, PositionService positionService,
                              OrderService orderService, MatchEngine matchEngine,
-                             TransactionTemplate transactionTemplate) {
+                             TransactionTemplate transactionTemplate, RedisCacheClient cacheClient) {
         this.tradeOrderMapper = tradeOrderMapper;
         this.stockQuoteMapper = stockQuoteMapper;
         this.stockInfoMapper = stockInfoMapper;
@@ -69,6 +72,7 @@ public class SettlementService {
         this.orderService = orderService;
         this.matchEngine = matchEngine;
         this.transactionTemplate = transactionTemplate;
+        this.cacheClient = cacheClient;
     }
 
     public SettlementResult run() {
@@ -81,6 +85,7 @@ public class SettlementService {
         int expired = expireOrders(closeDate);
         int cutQuotes = cutQuotes(closeDate, nextDate);
         int cleared = clearTodayBuy();
+        cacheClient.deleteByPattern(CacheKeys.QUOTE_PATTERN);
         log.info("最小日切完成: closeDate={}, nextDate={}, 过期撤单={}, 行情日切={}, T+1清零={}",
                 closeDate, nextDate, expired, cutQuotes, cleared);
         return new SettlementResult(expired, cutQuotes, cleared, closeDate, nextDate);

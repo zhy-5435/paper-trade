@@ -7,6 +7,8 @@ import com.stocksim.account.service.AccountService;
 import com.stocksim.common.BizException;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
+import com.stocksim.common.cache.CacheKeys;
+import com.stocksim.common.cache.RedisCacheClient;
 import com.stocksim.match.book.BookOrder;
 import com.stocksim.match.book.InMemoryOrderBook;
 import com.stocksim.match.engine.MatchEngine;
@@ -79,6 +81,8 @@ class SettlementServiceTest {
     private MatchEngine matchEngine;
     @Mock
     private TransactionTemplate transactionTemplate;
+    @Mock
+    private RedisCacheClient cacheClient;
 
     private InMemoryOrderBook book;
     private SettlementService service;
@@ -95,7 +99,7 @@ class SettlementServiceTest {
         book = new InMemoryOrderBook();
         service = new SettlementService(tradeOrderMapper, stockQuoteMapper, stockInfoMapper,
                 userPositionMapper, accountService, positionService, orderService, matchEngine,
-                transactionTemplate);
+                transactionTemplate, cacheClient);
         lenient().when(transactionTemplate.execute(any())).thenAnswer(inv -> {
             TransactionCallback<?> callback = inv.getArgument(0);
             return callback.doInTransaction(new SimpleTransactionStatus());
@@ -209,6 +213,31 @@ class SettlementServiceTest {
         Map<String, Object> params = quoteUpdate.getValue().getParamNameValuePairs();
         assertThat(params.values()).contains(NEXT_D, new BigDecimal("11.00"),
                 new BigDecimal("9.00"), new BigDecimal("10.00"), 0L);
+    }
+
+    @Test
+    void dayCutEvictsAllQuoteCache() {
+        StockQuote q = quote(D);
+        when(stockQuoteMapper.selectOne(any())).thenReturn(q, q);
+        when(tradeOrderMapper.selectList(any())).thenReturn(List.of());
+        when(stockInfoMapper.selectList(null)).thenReturn(List.of(stockInfo()));
+        when(stockQuoteMapper.selectList(any())).thenReturn(List.of(q));
+        when(stockQuoteMapper.update(any(), any())).thenReturn(1);
+        when(userPositionMapper.update(any(), any())).thenReturn(0);
+
+        SettlementResult result = service.run();
+
+        assertThat(result.closeDate()).isEqualTo(D);
+        verify(cacheClient).deleteByPattern(CacheKeys.QUOTE_PATTERN);
+    }
+
+    @Test
+    void earlyReturnDoesNotEvictQuoteCache() {
+        when(stockQuoteMapper.selectOne(any())).thenReturn(null);
+
+        service.run();
+
+        verify(cacheClient, never()).deleteByPattern(any());
     }
 
     @Test

@@ -6,6 +6,9 @@ import com.stocksim.common.BizException;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
 import com.stocksim.common.TradingSession;
+import com.stocksim.common.cache.CacheKeys;
+import com.stocksim.common.cache.RedisCacheClient;
+import com.stocksim.common.properties.CacheProperties;
 import com.stocksim.common.properties.QuoteProperties;
 import com.stocksim.common.properties.TradeProperties;
 import com.stocksim.stock.dto.QuoteResponse;
@@ -35,23 +38,48 @@ public class QuoteServiceImpl implements QuoteService {
     private final StockQuoteMapper stockQuoteMapper;
     private final QuoteProperties quoteProperties;
     private final TradeProperties tradeProperties;
+    private final RedisCacheClient cacheClient;
+    private final CacheProperties cacheProperties;
 
     public QuoteServiceImpl(StockInfoMapper stockInfoMapper, StockQuoteMapper stockQuoteMapper,
-                            QuoteProperties quoteProperties, TradeProperties tradeProperties) {
+                            QuoteProperties quoteProperties, TradeProperties tradeProperties,
+                            RedisCacheClient cacheClient, CacheProperties cacheProperties) {
         this.stockInfoMapper = stockInfoMapper;
         this.stockQuoteMapper = stockQuoteMapper;
         this.quoteProperties = quoteProperties;
         this.tradeProperties = tradeProperties;
+        this.cacheClient = cacheClient;
+        this.cacheProperties = cacheProperties;
     }
 
     @Override
     public QuoteResponse getQuote(String stockCode) {
+        if (cacheClient.bloomDefinitelyAbsent(CacheKeys.BLOOM_STOCK, stockCode)) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "行情不存在");
+        }
+        String key = CacheKeys.quote(stockCode);
+        QuoteResponse cached = cacheClient.get(key, QuoteResponse.class);
+        if (cached != null) {
+            log.debug("行情缓存命中, stockCode={}", stockCode);
+            return cached;
+        }
         StockQuote quote = stockQuoteMapper.selectOne(
                 new LambdaQueryWrapper<StockQuote>().eq(StockQuote::getStockCode, stockCode));
         if (quote == null) {
             throw new BizException(ErrorCode.PARAM_ERROR, "行情不存在");
         }
-        return toResponse(quote);
+        QuoteResponse resp = toResponse(quote);
+        cacheClient.set(key, resp, quoteTtlWithJitter());
+        log.debug("行情缓存回源, stockCode={}", stockCode);
+        return resp;
+    }
+
+    /** 行情短 TTL + 随机打散防雪崩（Q1，对齐刷新间隔） */
+    private long quoteTtlWithJitter() {
+        long base = cacheProperties.getQuoteTtlMs();
+        long jitter = cacheProperties.getQuoteTtlJitterMs();
+        long delta = jitter <= 0 ? 0 : ThreadLocalRandom.current().nextLong(-jitter, jitter + 1);
+        return Math.max(1, base + delta);
     }
 
     @Override
@@ -119,6 +147,7 @@ public class QuoteServiceImpl implements QuoteService {
             update.setChangeRatio(changeRatio(next, quote.getPreClosePrice()));
             update.setQuoteTime(LocalDateTime.now(TradeCalendar.ZONE));
             if (stockQuoteMapper.updateById(update) > 0) {
+                cacheClient.delete(CacheKeys.quote(stockCode));
                 return true;
             }
         }

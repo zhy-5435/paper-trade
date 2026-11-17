@@ -6,6 +6,9 @@ import com.stocksim.common.BizException;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.PageResult;
 import com.stocksim.common.TradeCalendar;
+import com.stocksim.common.cache.CacheKeys;
+import com.stocksim.common.cache.RedisCacheClient;
+import com.stocksim.common.properties.CacheProperties;
 import com.stocksim.stock.dto.CreateStockRequest;
 import com.stocksim.stock.dto.StockResponse;
 import com.stocksim.stock.dto.UpdateStockRequest;
@@ -30,10 +33,15 @@ public class StockServiceImpl implements StockService {
 
     private final StockInfoMapper stockInfoMapper;
     private final StockQuoteMapper stockQuoteMapper;
+    private final RedisCacheClient cacheClient;
+    private final CacheProperties cacheProperties;
 
-    public StockServiceImpl(StockInfoMapper stockInfoMapper, StockQuoteMapper stockQuoteMapper) {
+    public StockServiceImpl(StockInfoMapper stockInfoMapper, StockQuoteMapper stockQuoteMapper,
+                            RedisCacheClient cacheClient, CacheProperties cacheProperties) {
         this.stockInfoMapper = stockInfoMapper;
         this.stockQuoteMapper = stockQuoteMapper;
+        this.cacheClient = cacheClient;
+        this.cacheProperties = cacheProperties;
     }
 
     @Override
@@ -47,7 +55,18 @@ public class StockServiceImpl implements StockService {
 
     @Override
     public StockResponse getStock(String stockCode) {
-        return toResponse(requireStock(stockCode));
+        if (cacheClient.bloomDefinitelyAbsent(CacheKeys.BLOOM_STOCK, stockCode)) {
+            throw new BizException(ErrorCode.PARAM_ERROR, "股票不存在");
+        }
+        String key = CacheKeys.stock(stockCode);
+        StockResponse cached = cacheClient.get(key, StockResponse.class);
+        if (cached != null) {
+            return cached;
+        }
+        StockResponse resp = toResponse(requireStock(stockCode));
+        cacheClient.set(key, resp, cacheProperties.getStockTtlMs());
+        cacheClient.bloomAdd(CacheKeys.BLOOM_STOCK, stockCode);
+        return resp;
     }
 
     @Override
@@ -74,6 +93,7 @@ public class StockServiceImpl implements StockService {
             throw new BizException(ErrorCode.PARAM_ERROR, "股票代码已存在");
         }
         initQuote(stock);
+        cacheClient.bloomAdd(CacheKeys.BLOOM_STOCK, stock.getStockCode());
         return toResponse(stock);
     }
 
@@ -93,9 +113,13 @@ public class StockServiceImpl implements StockService {
         if (stockInfoMapper.updateById(update) == 0) {
             throw new BizException(ErrorCode.SYSTEM_BUSY, "股票并发更新冲突，请重试");
         }
+        cacheClient.evictDelayedDouble(CacheKeys.stock(request.stockCode()),
+                cacheProperties.getDelayedDoubleDeleteMs());
         if (request.priceLimitRatio() != null
                 && request.priceLimitRatio().compareTo(stock.getPriceLimitRatio()) != 0) {
             recomputeLimitPrices(request.stockCode(), request.priceLimitRatio());
+            cacheClient.evictDelayedDouble(CacheKeys.quote(request.stockCode()),
+                    cacheProperties.getDelayedDoubleDeleteMs());
         }
         return toResponse(requireStock(request.stockCode()));
     }
@@ -113,6 +137,8 @@ public class StockServiceImpl implements StockService {
         if (stockInfoMapper.updateById(update) == 0) {
             throw new BizException(ErrorCode.SYSTEM_BUSY, "股票并发更新冲突，请重试");
         }
+        cacheClient.evictDelayedDouble(CacheKeys.stock(stockCode),
+                cacheProperties.getDelayedDoubleDeleteMs());
     }
 
     private void initQuote(StockInfo stock) {
