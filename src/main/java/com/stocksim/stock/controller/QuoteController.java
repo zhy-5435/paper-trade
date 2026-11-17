@@ -1,6 +1,8 @@
 package com.stocksim.stock.controller;
 
 import com.stocksim.common.Result;
+import com.stocksim.common.ratelimit.RateLimit;
+import com.stocksim.common.ratelimit.RateLimitType;
 import com.stocksim.stock.dto.QuoteResponse;
 import com.stocksim.stock.service.QuoteService;
 import io.swagger.v3.oas.annotations.Operation;
@@ -24,6 +26,7 @@ public class QuoteController {
     }
 
     @Operation(summary = "批量行情查询")
+    @RateLimit(type = RateLimitType.QUOTE)
     @GetMapping
     public Result<List<QuoteResponse>> batch(@RequestParam List<String> codes) {
         return Result.ok(quoteService.batchQuotes(codes));

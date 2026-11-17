@@ -3,6 +3,8 @@ package com.stocksim.order.controller;
 import com.stocksim.common.PageResult;
 import com.stocksim.common.Result;
 import com.stocksim.common.context.UserContext;
+import com.stocksim.common.ratelimit.RateLimit;
+import com.stocksim.common.ratelimit.RateLimitType;
 import com.stocksim.order.dto.CreateOrderRequest;
 import com.stocksim.order.dto.OrderResponse;
 import com.stocksim.order.service.OrderService;
@@ -35,6 +37,7 @@ public class OrderController {
     }
 
     @Operation(summary = "创建限价单（买/卖，requestId 幂等）")
+    @RateLimit(type = RateLimitType.ORDER)
     @PostMapping
     public Result<OrderResponse> create(@Valid @RequestBody CreateOrderRequest request) {
         return Result.ok(orderService.createOrder(UserContext.userId(), request));

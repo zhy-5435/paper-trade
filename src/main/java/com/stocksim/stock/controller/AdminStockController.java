@@ -1,6 +1,8 @@
 package com.stocksim.stock.controller;
 
 import com.stocksim.common.Result;
+import com.stocksim.common.audit.OperationAudit;
+import com.stocksim.common.audit.OperationType;
 import com.stocksim.stock.dto.CreateStockRequest;
 import com.stocksim.stock.dto.StockResponse;
 import com.stocksim.stock.dto.UpdateStockRequest;
@@ -28,18 +30,21 @@ public class AdminStockController {
     }
 
     @Operation(summary = "新增股票（自动初始化当日行情）")
+    @OperationAudit(type = OperationType.STOCK_MAINTAIN, targetType = "stock")
     @PostMapping
     public Result<StockResponse> create(@Valid @RequestBody CreateStockRequest request) {
         return Result.ok(stockService.createStock(request));
     }
 
     @Operation(summary = "修改股票")
+    @OperationAudit(type = OperationType.STOCK_MAINTAIN, targetType = "stock")
     @PutMapping
     public Result<StockResponse> update(@Valid @RequestBody UpdateStockRequest request) {
         return Result.ok(stockService.updateStock(request));
     }
 
     @Operation(summary = "停牌/复牌/退市")
+    @OperationAudit(type = OperationType.STOCK_MAINTAIN, targetType = "stock")
     @PutMapping("/{code}/status")
     public Result<Void> updateStatus(@PathVariable String code,
                                      @Valid @RequestBody UpdateStockStatusRequest request) {

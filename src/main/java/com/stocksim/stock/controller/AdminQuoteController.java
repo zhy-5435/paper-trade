@@ -1,6 +1,8 @@
 package com.stocksim.stock.controller;
 
 import com.stocksim.common.Result;
+import com.stocksim.common.audit.OperationAudit;
+import com.stocksim.common.audit.OperationType;
 import com.stocksim.stock.service.QuoteService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -20,6 +22,7 @@ public class AdminQuoteController {
     }
 
     @Operation(summary = "手动刷新全部行情（返回刷新只数）")
+    @OperationAudit(type = OperationType.QUOTE_MANAGE, targetType = "quote")
     @PostMapping("/refresh")
     public Result<Integer> refresh() {
         return Result.ok(quoteService.refreshAll(true));

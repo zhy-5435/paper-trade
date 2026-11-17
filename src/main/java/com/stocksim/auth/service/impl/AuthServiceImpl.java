@@ -13,6 +13,7 @@ import com.stocksim.auth.service.JwtService;
 import com.stocksim.common.BizException;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
+import com.stocksim.common.audit.OperationAuditService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DuplicateKeyException;
@@ -30,12 +31,15 @@ public class AuthServiceImpl implements AuthService {
     private final SysUserMapper sysUserMapper;
     private final AccountService accountService;
     private final JwtService jwtService;
+    private final OperationAuditService operationAuditService;
     private final PasswordEncoder passwordEncoder = new BCryptPasswordEncoder();
 
-    public AuthServiceImpl(SysUserMapper sysUserMapper, AccountService accountService, JwtService jwtService) {
+    public AuthServiceImpl(SysUserMapper sysUserMapper, AccountService accountService, JwtService jwtService,
+                           OperationAuditService operationAuditService) {
         this.sysUserMapper = sysUserMapper;
         this.accountService = accountService;
         this.jwtService = jwtService;
+        this.operationAuditService = operationAuditService;
     }
 
     @Override
@@ -90,6 +94,7 @@ public class AuthServiceImpl implements AuthService {
         update.setVersion(user.getVersion());
         sysUserMapper.updateById(update);
         String token = jwtService.generate(user.getId(), user.getUsername(), user.getRole());
+        operationAuditService.recordLogin(user.getId(), user.getUsername(), new Object[]{request});
         return new LoginResponse(token, user.getId(), user.getUsername(), user.getRole(), user.getNickname());
     }
 }
