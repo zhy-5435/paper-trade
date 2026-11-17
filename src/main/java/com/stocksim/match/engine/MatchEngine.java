@@ -4,6 +4,7 @@ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.stocksim.common.BizException;
 import com.stocksim.common.BizNoGenerator;
 import com.stocksim.common.ErrorCode;
+import com.stocksim.common.lock.LockProvider;
 import com.stocksim.match.book.BookOrder;
 import com.stocksim.match.book.InMemoryOrderBook;
 import com.stocksim.match.book.OrderBook;
@@ -25,10 +26,11 @@ import org.springframework.transaction.event.TransactionalEventListener;
 import java.math.BigDecimal;
 import java.util.List;
 import java.util.concurrent.ConcurrentHashMap;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 /**
- * 撮合引擎：每股 ReentrantLock 串行 + 内存盘口（R1规划§6.6）。
+ * 撮合引擎：每股分布式锁串行 + 内存盘口（R1规划§6.6，M2 接入 LockProvider）。
  * 下单 T1 提交后 AFTER_COMMIT 触发；每笔成交一个 T2，记账成功才扣减盘口、推进 deal_seq。
  */
 @Component
@@ -38,7 +40,6 @@ public class MatchEngine {
     private static final int MAX_CAS_RETRY = 3;
 
     private final ConcurrentHashMap<String, OrderBook> books = new ConcurrentHashMap<>();
-    private final ConcurrentHashMap<String, ReentrantLock> locks = new ConcurrentHashMap<>();
 
     private final TradeOrderMapper tradeOrderMapper;
     private final DealRecordMapper dealRecordMapper;
@@ -46,16 +47,18 @@ public class MatchEngine {
     private final DealNotify dealNotify;
     private final BizNoGenerator bizNoGenerator;
     private final DealSeq dealSeq;
+    private final LockProvider lockProvider;
 
     public MatchEngine(TradeOrderMapper tradeOrderMapper, DealRecordMapper dealRecordMapper,
                        StockService stockService, DealNotify dealNotify,
-                       BizNoGenerator bizNoGenerator, DealSeq dealSeq) {
+                       BizNoGenerator bizNoGenerator, DealSeq dealSeq, LockProvider lockProvider) {
         this.tradeOrderMapper = tradeOrderMapper;
         this.dealRecordMapper = dealRecordMapper;
         this.stockService = stockService;
         this.dealNotify = dealNotify;
         this.bizNoGenerator = bizNoGenerator;
         this.dealSeq = dealSeq;
+        this.lockProvider = lockProvider;
     }
 
     /** 启动重建（R1规划§6.7）：deal_seq 取 DB MAX，未成交完的挂单按 create_time 入盘，不重放记账 */
@@ -84,8 +87,19 @@ public class MatchEngine {
     }
 
     public void onNewOrder(String stockCode, String orderNo) {
-        ReentrantLock lock = lockOf(stockCode);
-        lock.lock();
+        Lock lock = lockOf(stockCode);
+        boolean acquired;
+        try {
+            acquired = lock.tryLock(3, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            log.warn("撮合加锁被中断, 留单待下次触发, stockCode={}, orderNo={}", stockCode, orderNo);
+            return;
+        }
+        if (!acquired) {
+            log.warn("撮合加锁超时, 留单待下次触发, stockCode={}, orderNo={}", stockCode, orderNo);
+            return;
+        }
         try {
             OrderBook book = bookOf(stockCode);
             if (!book.contains(orderNo)) {
@@ -178,8 +192,8 @@ public class MatchEngine {
                 order.getEntrustQty() - order.getMatchedQty(), order.getCreateTime());
     }
 
-    public ReentrantLock lockOf(String stockCode) {
-        return locks.computeIfAbsent(stockCode, k -> new ReentrantLock());
+    public Lock lockOf(String stockCode) {
+        return lockProvider.stockLock(stockCode);
     }
 
     public OrderBook bookOf(String stockCode) {

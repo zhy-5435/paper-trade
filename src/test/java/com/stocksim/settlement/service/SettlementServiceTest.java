@@ -9,6 +9,7 @@ import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
 import com.stocksim.common.cache.CacheKeys;
 import com.stocksim.common.cache.RedisCacheClient;
+import com.stocksim.common.lock.LocalLockProvider;
 import com.stocksim.match.book.BookOrder;
 import com.stocksim.match.book.InMemoryOrderBook;
 import com.stocksim.match.engine.MatchEngine;
@@ -99,7 +100,7 @@ class SettlementServiceTest {
         book = new InMemoryOrderBook();
         service = new SettlementService(tradeOrderMapper, stockQuoteMapper, stockInfoMapper,
                 userPositionMapper, accountService, positionService, orderService, matchEngine,
-                transactionTemplate, cacheClient);
+                transactionTemplate, cacheClient, new LocalLockProvider());
         lenient().when(transactionTemplate.execute(any())).thenAnswer(inv -> {
             TransactionCallback<?> callback = inv.getArgument(0);
             return callback.doInTransaction(new SimpleTransactionStatus());

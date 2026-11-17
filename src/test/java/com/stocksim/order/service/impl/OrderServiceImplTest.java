@@ -7,6 +7,7 @@ import com.stocksim.common.BizException;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.PageResult;
 import com.stocksim.common.TradingSession;
+import com.stocksim.common.lock.LocalLockProvider;
 import com.stocksim.common.properties.TradeProperties;
 import com.stocksim.order.dto.CreateOrderRequest;
 import com.stocksim.order.dto.OrderResponse;
@@ -80,7 +81,8 @@ class OrderServiceImplTest {
         tradeProperties = new TradeProperties();
         FeeCalculator feeCalculator = new FeeCalculator(tradeProperties);
         orderService = new OrderServiceImpl(tradeOrderMapper, stockService, quoteService, accountService,
-                positionService, feeCalculator, bizNoGenerator, tradeProperties, transactionTemplate, eventPublisher);
+                positionService, feeCalculator, bizNoGenerator, tradeProperties, transactionTemplate, eventPublisher,
+                new LocalLockProvider());
     }
 
     private void txRunsCallback() {

@@ -9,6 +9,7 @@ import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
 import com.stocksim.common.cache.CacheKeys;
 import com.stocksim.common.cache.RedisCacheClient;
+import com.stocksim.common.lock.LockProvider;
 import com.stocksim.match.engine.MatchEngine;
 import com.stocksim.order.entity.TradeOrder;
 import com.stocksim.order.mapper.TradeOrderMapper;
@@ -33,7 +34,8 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.locks.ReentrantLock;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 import java.util.stream.Collectors;
 
 /**
@@ -57,12 +59,14 @@ public class SettlementService {
     private final MatchEngine matchEngine;
     private final TransactionTemplate transactionTemplate;
     private final RedisCacheClient cacheClient;
+    private final LockProvider lockProvider;
 
     public SettlementService(TradeOrderMapper tradeOrderMapper, StockQuoteMapper stockQuoteMapper,
                              StockInfoMapper stockInfoMapper, UserPositionMapper userPositionMapper,
                              AccountService accountService, PositionService positionService,
                              OrderService orderService, MatchEngine matchEngine,
-                             TransactionTemplate transactionTemplate, RedisCacheClient cacheClient) {
+                             TransactionTemplate transactionTemplate, RedisCacheClient cacheClient,
+                             LockProvider lockProvider) {
         this.tradeOrderMapper = tradeOrderMapper;
         this.stockQuoteMapper = stockQuoteMapper;
         this.stockInfoMapper = stockInfoMapper;
@@ -73,22 +77,40 @@ public class SettlementService {
         this.matchEngine = matchEngine;
         this.transactionTemplate = transactionTemplate;
         this.cacheClient = cacheClient;
+        this.lockProvider = lockProvider;
     }
 
     public SettlementResult run() {
-        LocalDate closeDate = currentQuoteTradeDate();
-        if (closeDate == null) {
-            log.info("无行情，跳过日切");
-            return new SettlementResult(0, 0, 0, null, null);
+        Lock leader = lockProvider.settlementLeaderLock();
+        boolean acquired;
+        try {
+            acquired = leader.tryLock(0, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "清算执行中");
+        } catch (RuntimeException e) {
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "清算执行中");
         }
-        LocalDate nextDate = TradeCalendar.nextTradingDay(closeDate);
-        int expired = expireOrders(closeDate);
-        int cutQuotes = cutQuotes(closeDate, nextDate);
-        int cleared = clearTodayBuy();
-        cacheClient.deleteByPattern(CacheKeys.QUOTE_PATTERN);
-        log.info("最小日切完成: closeDate={}, nextDate={}, 过期撤单={}, 行情日切={}, T+1清零={}",
-                closeDate, nextDate, expired, cutQuotes, cleared);
-        return new SettlementResult(expired, cutQuotes, cleared, closeDate, nextDate);
+        if (!acquired) {
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "清算执行中");
+        }
+        try {
+            LocalDate closeDate = currentQuoteTradeDate();
+            if (closeDate == null) {
+                log.info("无行情，跳过日切");
+                return new SettlementResult(0, 0, 0, null, null);
+            }
+            LocalDate nextDate = TradeCalendar.nextTradingDay(closeDate);
+            int expired = expireOrders(closeDate);
+            int cutQuotes = cutQuotes(closeDate, nextDate);
+            int cleared = clearTodayBuy();
+            cacheClient.deleteByPattern(CacheKeys.QUOTE_PATTERN);
+            log.info("最小日切完成: closeDate={}, nextDate={}, 过期撤单={}, 行情日切={}, T+1清零={}",
+                    closeDate, nextDate, expired, cutQuotes, cleared);
+            return new SettlementResult(expired, cutQuotes, cleared, closeDate, nextDate);
+        } finally {
+            leader.unlock();
+        }
     }
 
     private LocalDate currentQuoteTradeDate() {
@@ -113,7 +135,7 @@ public class SettlementService {
     }
 
     private boolean expireOne(String orderNo, String stockCode, LocalDate closeDate) {
-        ReentrantLock lock = matchEngine.lockOf(stockCode);
+        Lock lock = matchEngine.lockOf(stockCode);
         lock.lock();
         try {
             for (int attempt = 0; attempt < MAX_CAS_RETRY; attempt++) {

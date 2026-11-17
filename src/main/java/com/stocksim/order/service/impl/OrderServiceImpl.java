@@ -11,6 +11,7 @@ import com.stocksim.common.ErrorCode;
 import com.stocksim.common.PageResult;
 import com.stocksim.common.TradeCalendar;
 import com.stocksim.common.TradingSession;
+import com.stocksim.common.lock.LockProvider;
 import com.stocksim.common.properties.TradeProperties;
 import com.stocksim.order.dto.CreateOrderRequest;
 import com.stocksim.order.dto.OrderResponse;
@@ -34,6 +35,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 import java.math.BigDecimal;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 @Service
 public class OrderServiceImpl implements OrderService {
@@ -52,12 +55,13 @@ public class OrderServiceImpl implements OrderService {
     private final TradeProperties tradeProperties;
     private final TransactionTemplate transactionTemplate;
     private final ApplicationEventPublisher eventPublisher;
+    private final LockProvider lockProvider;
 
     public OrderServiceImpl(TradeOrderMapper tradeOrderMapper, StockService stockService, QuoteService quoteService,
                             AccountService accountService, PositionService positionService,
                             FeeCalculator feeCalculator, BizNoGenerator bizNoGenerator,
                             TradeProperties tradeProperties, TransactionTemplate transactionTemplate,
-                            ApplicationEventPublisher eventPublisher) {
+                            ApplicationEventPublisher eventPublisher, LockProvider lockProvider) {
         this.tradeOrderMapper = tradeOrderMapper;
         this.stockService = stockService;
         this.quoteService = quoteService;
@@ -68,6 +72,7 @@ public class OrderServiceImpl implements OrderService {
         this.tradeProperties = tradeProperties;
         this.transactionTemplate = transactionTemplate;
         this.eventPublisher = eventPublisher;
+        this.lockProvider = lockProvider;
     }
 
     @Override
@@ -104,20 +109,37 @@ public class OrderServiceImpl implements OrderService {
         if (account.status() == null || account.status() != 1) {
             throw new BizException(ErrorCode.ACCOUNT_FROZEN, "账户状态异常");
         }
-        for (int attempt = 0; attempt < MAX_CAS_RETRY; attempt++) {
-            try {
-                // RR 隔离级别下同事务重读仍是旧快照，CAS 重试必须每次开新事务
-                return transactionTemplate.execute(status -> doCreateOrder(userId, request, quote, freezeAmount));
-            } catch (DuplicateKeyException e) {
-                return toResponse(requireByRequest(userId, request.requestId()));
-            } catch (BizException e) {
-                if (e.getErrorCode() != ErrorCode.SYSTEM_BUSY) {
-                    throw e;
-                }
-                // 账户/持仓 CAS 冲突，换事务重试
-            }
+        Lock lock = lockProvider.accountLock(userId);
+        boolean acquired;
+        try {
+            acquired = lock.tryLock(3, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户繁忙，请重试");
+        } catch (RuntimeException e) {
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户繁忙，请重试");
         }
-        throw new BizException(ErrorCode.SYSTEM_BUSY, "下单并发冲突，请重试");
+        if (!acquired) {
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户繁忙，请重试");
+        }
+        try {
+            for (int attempt = 0; attempt < MAX_CAS_RETRY; attempt++) {
+                try {
+                    // RR 隔离级别下同事务重读仍是旧快照，CAS 重试必须每次开新事务
+                    return transactionTemplate.execute(status -> doCreateOrder(userId, request, quote, freezeAmount));
+                } catch (DuplicateKeyException e) {
+                    return toResponse(requireByRequest(userId, request.requestId()));
+                } catch (BizException e) {
+                    if (e.getErrorCode() != ErrorCode.SYSTEM_BUSY) {
+                        throw e;
+                    }
+                    // 账户/持仓 CAS 冲突，换事务重试
+                }
+            }
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "下单并发冲突，请重试");
+        } finally {
+            lock.unlock();
+        }
     }
 
     @Override

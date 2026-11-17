@@ -9,11 +9,14 @@ import com.stocksim.account.mapper.FundFlowMapper;
 import com.stocksim.account.mapper.UserAccountMapper;
 import com.stocksim.common.BizException;
 import com.stocksim.common.BizNoGenerator;
+import com.stocksim.common.lock.LocalLockProvider;
+import com.stocksim.common.lock.LockProvider;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.ArgumentCaptor;
 import org.mockito.InjectMocks;
 import org.mockito.Mock;
+import org.mockito.Spy;
 import org.mockito.junit.jupiter.MockitoExtension;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.transaction.support.SimpleTransactionStatus;
@@ -21,10 +24,14 @@ import org.springframework.transaction.support.TransactionCallback;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
 import static org.mockito.ArgumentMatchers.any;
+import static org.mockito.Mockito.doReturn;
+import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
@@ -41,6 +48,8 @@ class AccountServiceImplTest {
     private BizNoGenerator bizNoGenerator;
     @Mock
     private TransactionTemplate transactionTemplate;
+    @Spy
+    private LockProvider lockProvider = new LocalLockProvider();
     @InjectMocks
     private AccountServiceImpl accountService;
 
@@ -327,5 +336,31 @@ class AccountServiceImplTest {
         assertThat(resp.availableAmount()).isEqualByComparingTo("70.00");
         assertThat(resp.balance()).isEqualByComparingTo("100.00");
         assertThat(resp.frozenAmount()).isEqualByComparingTo("30.00");
+    }
+
+    @Test
+    void 账户锁超时_5001且不开事务() throws InterruptedException {
+        Lock held = mock(Lock.class);
+        when(held.tryLock(3, TimeUnit.SECONDS)).thenReturn(false);
+        doReturn(held).when(lockProvider).accountLock(2L);
+
+        assertThatThrownBy(() -> accountService.deposit(2L, new MoneyRequest("r1", new BigDecimal("100.00"))))
+                .isInstanceOf(BizException.class)
+                .extracting(e -> ((BizException) e).getErrorCode().getCode())
+                .isEqualTo(5001);
+        verify(transactionTemplate, never()).execute(any());
+    }
+
+    @Test
+    void 账户锁后端故障_failFast5001() throws InterruptedException {
+        Lock held = mock(Lock.class);
+        when(held.tryLock(3, TimeUnit.SECONDS)).thenThrow(new RuntimeException("redis down"));
+        doReturn(held).when(lockProvider).accountLock(2L);
+
+        assertThatThrownBy(() -> accountService.deposit(2L, new MoneyRequest("r1", new BigDecimal("100.00"))))
+                .isInstanceOf(BizException.class)
+                .extracting(e -> ((BizException) e).getErrorCode().getCode())
+                .isEqualTo(5001);
+        verify(transactionTemplate, never()).execute(any());
     }
 }

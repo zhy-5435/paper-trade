@@ -14,6 +14,7 @@ import com.stocksim.common.BizException;
 import com.stocksim.common.BizNoGenerator;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.PageResult;
+import com.stocksim.common.lock.LockProvider;
 import org.springframework.dao.DuplicateKeyException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
@@ -21,6 +22,8 @@ import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.util.List;
+import java.util.concurrent.TimeUnit;
+import java.util.concurrent.locks.Lock;
 
 @Service
 public class AccountServiceImpl implements AccountService {
@@ -31,13 +34,16 @@ public class AccountServiceImpl implements AccountService {
     private final FundFlowMapper fundFlowMapper;
     private final BizNoGenerator bizNoGenerator;
     private final TransactionTemplate transactionTemplate;
+    private final LockProvider lockProvider;
 
     public AccountServiceImpl(UserAccountMapper userAccountMapper, FundFlowMapper fundFlowMapper,
-                              BizNoGenerator bizNoGenerator, TransactionTemplate transactionTemplate) {
+                              BizNoGenerator bizNoGenerator, TransactionTemplate transactionTemplate,
+                              LockProvider lockProvider) {
         this.userAccountMapper = userAccountMapper;
         this.fundFlowMapper = fundFlowMapper;
         this.bizNoGenerator = bizNoGenerator;
         this.transactionTemplate = transactionTemplate;
+        this.lockProvider = lockProvider;
     }
 
     @Override
@@ -140,17 +146,34 @@ public class AccountServiceImpl implements AccountService {
         if (existing != null) {
             return toFlowResponse(existing);
         }
-        for (int attempt = 0; attempt < MAX_CAS_RETRY; attempt++) {
-            try {
-                // RR 隔离级别下同事务重读仍是旧快照，CAS 重试必须每次开新事务
-                return transactionTemplate.execute(status -> doApplyMoney(userId, request, deposit));
-            } catch (CasConflictException e) {
-                // 换事务重试
-            } catch (DuplicateKeyException e) {
-                return toFlowResponse(requireFlowByRequest(userId, request.requestId()));
-            }
+        Lock lock = lockProvider.accountLock(userId);
+        boolean acquired;
+        try {
+            acquired = lock.tryLock(3, TimeUnit.SECONDS);
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户繁忙，请重试");
+        } catch (RuntimeException e) {
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户繁忙，请重试");
         }
-        throw new BizException(ErrorCode.SYSTEM_BUSY, "账户并发冲突，请重试");
+        if (!acquired) {
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户繁忙，请重试");
+        }
+        try {
+            for (int attempt = 0; attempt < MAX_CAS_RETRY; attempt++) {
+                try {
+                    // RR 隔离级别下同事务重读仍是旧快照，CAS 重试必须每次开新事务
+                    return transactionTemplate.execute(status -> doApplyMoney(userId, request, deposit));
+                } catch (CasConflictException e) {
+                    // 换事务重试
+                } catch (DuplicateKeyException e) {
+                    return toFlowResponse(requireFlowByRequest(userId, request.requestId()));
+                }
+            }
+            throw new BizException(ErrorCode.SYSTEM_BUSY, "账户并发冲突，请重试");
+        } finally {
+            lock.unlock();
+        }
     }
 
     private FlowResponse doApplyMoney(Long userId, MoneyRequest request, boolean deposit) {

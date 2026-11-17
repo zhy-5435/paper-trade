@@ -3,6 +3,7 @@ package com.stocksim.match.engine;
 import com.stocksim.common.BizException;
 import com.stocksim.common.BizNoGenerator;
 import com.stocksim.common.ErrorCode;
+import com.stocksim.common.lock.LocalLockProvider;
 import com.stocksim.match.book.BookOrder;
 import com.stocksim.match.mapper.DealRecordMapper;
 import com.stocksim.match.notify.DealNotify;
@@ -58,7 +59,8 @@ class MatchEngineTest {
     @BeforeEach
     void setUp() {
         dealSeq = new DealSeq();
-        engine = new MatchEngine(tradeOrderMapper, dealRecordMapper, stockService, dealNotify, bizNoGenerator, dealSeq);
+        engine = new MatchEngine(tradeOrderMapper, dealRecordMapper, stockService, dealNotify, bizNoGenerator, dealSeq,
+                new LocalLockProvider());
         lenient().when(stockService.getStock(STOCK)).thenReturn(stock(1));
         lenient().when(bizNoGenerator.dealNo()).thenAnswer(inv -> "D" + dealNoCounter.incrementAndGet());
     }
