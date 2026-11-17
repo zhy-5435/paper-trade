@@ -6,6 +6,7 @@ import com.stocksim.common.context.UserContext;
 import com.stocksim.order.dto.CreateOrderRequest;
 import com.stocksim.order.dto.OrderResponse;
 import com.stocksim.order.service.OrderService;
+import com.stocksim.order.service.impl.OrderCancelService;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
@@ -26,15 +27,23 @@ import java.time.LocalDateTime;
 public class OrderController {
 
     private final OrderService orderService;
+    private final OrderCancelService orderCancelService;
 
-    public OrderController(OrderService orderService) {
+    public OrderController(OrderService orderService, OrderCancelService orderCancelService) {
         this.orderService = orderService;
+        this.orderCancelService = orderCancelService;
     }
 
     @Operation(summary = "创建限价单（买/卖，requestId 幂等）")
     @PostMapping
     public Result<OrderResponse> create(@Valid @RequestBody CreateOrderRequest request) {
         return Result.ok(orderService.createOrder(UserContext.userId(), request));
+    }
+
+    @Operation(summary = "用户主动撤单（在途记账冲突 4002，状态不允许 3007，非本人 1003）")
+    @PostMapping("/{orderNo}/cancel")
+    public Result<OrderResponse> cancel(@PathVariable String orderNo) {
+        return Result.ok(orderCancelService.cancelByUser(UserContext.userId(), orderNo));
     }
 
     @Operation(summary = "我的订单分页（状态/时间筛选）")

@@ -11,7 +11,9 @@ import com.stocksim.common.lock.LocalLockProvider;
 import com.stocksim.common.properties.TradeProperties;
 import com.stocksim.order.dto.CreateOrderRequest;
 import com.stocksim.order.dto.OrderResponse;
+import com.stocksim.order.entity.OrderStatusLog;
 import com.stocksim.order.entity.TradeOrder;
+import com.stocksim.order.mapper.OrderStatusLogMapper;
 import com.stocksim.order.mapper.TradeOrderMapper;
 import com.stocksim.order.util.FeeCalculator;
 import com.stocksim.position.dto.PositionResponse;
@@ -72,6 +74,8 @@ class OrderServiceImplTest {
     private TransactionTemplate transactionTemplate;
     @Mock
     private ApplicationEventPublisher eventPublisher;
+    @Mock
+    private OrderStatusLogMapper orderStatusLogMapper;
 
     private TradeProperties tradeProperties;
     private OrderServiceImpl orderService;
@@ -82,7 +86,7 @@ class OrderServiceImplTest {
         FeeCalculator feeCalculator = new FeeCalculator(tradeProperties);
         orderService = new OrderServiceImpl(tradeOrderMapper, stockService, quoteService, accountService,
                 positionService, feeCalculator, bizNoGenerator, tradeProperties, transactionTemplate, eventPublisher,
-                new LocalLockProvider());
+                new LocalLockProvider(), orderStatusLogMapper);
     }
 
     private void txRunsCallback() {
@@ -386,7 +390,7 @@ class OrderServiceImplTest {
         update.setMatchedQty(50L);
         when(tradeOrderMapper.updateById(any(TradeOrder.class))).thenReturn(1);
 
-        boolean ok = orderService.casTransit(current, 2, update);
+        boolean ok = orderService.casTransit(current, 2, update, 1, null);
 
         assertThat(ok).isTrue();
         ArgumentCaptor<TradeOrder> captor = ArgumentCaptor.forClass(TradeOrder.class);
@@ -402,7 +406,7 @@ class OrderServiceImplTest {
         TradeOrder current = existingOrder();
         current.setStatus(3);
 
-        assertThatThrownBy(() -> orderService.casTransit(current, 2, new TradeOrder()))
+        assertThatThrownBy(() -> orderService.casTransit(current, 2, new TradeOrder(), 1, null))
                 .isInstanceOf(BizException.class)
                 .extracting(e -> ((BizException) e).getErrorCode().getCode())
                 .isEqualTo(5001);
@@ -414,7 +418,34 @@ class OrderServiceImplTest {
         TradeOrder current = existingOrder();
         when(tradeOrderMapper.updateById(any(TradeOrder.class))).thenReturn(0);
 
-        assertThat(orderService.casTransit(current, 3, new TradeOrder())).isFalse();
+        assertThat(orderService.casTransit(current, 3, new TradeOrder(), 1, null)).isFalse();
+    }
+
+    @Test
+    void casTransit成功_同事务写状态日志() {
+        TradeOrder current = existingOrder();
+        when(tradeOrderMapper.updateById(any(TradeOrder.class))).thenReturn(1);
+
+        boolean ok = orderService.casTransit(current, 4, new TradeOrder(), 2, 2L);
+
+        assertThat(ok).isTrue();
+        ArgumentCaptor<OrderStatusLog> captor = ArgumentCaptor.forClass(OrderStatusLog.class);
+        verify(orderStatusLogMapper).insert(captor.capture());
+        OrderStatusLog statusLog = captor.getValue();
+        assertThat(statusLog.getOrderNo()).isEqualTo("O999");
+        assertThat(statusLog.getFromStatus()).isEqualTo(1);
+        assertThat(statusLog.getToStatus()).isEqualTo(4);
+        assertThat(statusLog.getChangeType()).isEqualTo(2);
+        assertThat(statusLog.getOperatorId()).isEqualTo(2L);
+    }
+
+    @Test
+    void casTransit版本冲突_不写状态日志() {
+        TradeOrder current = existingOrder();
+        when(tradeOrderMapper.updateById(any(TradeOrder.class))).thenReturn(0);
+
+        assertThat(orderService.casTransit(current, 3, new TradeOrder(), 1, null)).isFalse();
+        verify(orderStatusLogMapper, never()).insert(any(OrderStatusLog.class));
     }
 
     @Test

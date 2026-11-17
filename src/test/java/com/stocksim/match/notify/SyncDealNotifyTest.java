@@ -32,6 +32,7 @@ import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.anyLong;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
@@ -64,7 +65,7 @@ class SyncDealNotifyTest {
         FeeCalculator feeCalculator = new FeeCalculator(new TradeProperties());
         notify = new SyncDealNotify(tradeOrderMapper, dealRecordMapper, dealOrderDailyMapper,
                 orderService, accountService, positionService, quoteService, feeCalculator);
-        lenient().when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class)))
+        lenient().when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class), anyInt(), any()))
                 .thenReturn(true);
     }
 
@@ -140,7 +141,7 @@ class SyncDealNotifyTest {
                 eq(new BigDecimal("5.00")), eq(new BigDecimal("9.90")), eq("D1B1"), eq("D1"));
 
         ArgumentCaptor<TradeOrder> update = ArgumentCaptor.forClass(TradeOrder.class);
-        verify(orderService).casTransit(eq(buy), eq(OrderStateMachine.FILLED), update.capture());
+        verify(orderService).casTransit(eq(buy), eq(OrderStateMachine.FILLED), update.capture(), eq(1), isNull());
         assertThat(update.getValue().getMatchedQty()).isEqualTo(100);
         assertThat(update.getValue().getFrozenAmount()).isEqualByComparingTo("0.00");
         verify(quoteService).accumulateDeal(STOCK, 100, new BigDecimal("990.00"));
@@ -178,7 +179,7 @@ class SyncDealNotifyTest {
         verify(accountService).deduct(eq(1L), eq(new BigDecimal("980.00")), eq(new BigDecimal("1002.50")),
                 eq("D1B5"), eq("D1"));
         ArgumentCaptor<TradeOrder> update = ArgumentCaptor.forClass(TradeOrder.class);
-        verify(orderService).casTransit(eq(buy), eq(OrderStateMachine.PARTIAL_FILLED), update.capture());
+        verify(orderService).casTransit(eq(buy), eq(OrderStateMachine.PARTIAL_FILLED), update.capture(), eq(1), isNull());
         assertThat(update.getValue().getMatchedQty()).isEqualTo(100);
         assertThat(update.getValue().getFrozenAmount()).isEqualByComparingTo("1002.50");
     }
@@ -193,7 +194,7 @@ class SyncDealNotifyTest {
         verify(accountService).deduct(eq(1L), eq(new BigDecimal("980.00")), eq(new BigDecimal("1002.50")),
                 eq("D1B5"), eq("D1"));
         ArgumentCaptor<TradeOrder> update = ArgumentCaptor.forClass(TradeOrder.class);
-        verify(orderService).casTransit(eq(buy), eq(OrderStateMachine.FILLED), update.capture());
+        verify(orderService).casTransit(eq(buy), eq(OrderStateMachine.FILLED), update.capture(), eq(1), isNull());
         assertThat(update.getValue().getFrozenAmount()).isEqualByComparingTo("0.00");
     }
 
@@ -240,7 +241,7 @@ class SyncDealNotifyTest {
     @Test
     void casTransitFailureThrowsMatchConflict() {
         orders(buyOrder(100, 0, "1015.00"), sellOrder(100, 0, 100));
-        when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class))).thenReturn(false);
+        when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class), anyInt(), any())).thenReturn(false);
         assertThatThrownBy(() -> notify.onDeal(ctx("9.90", 100)))
                 .isInstanceOfSatisfying(BizException.class,
                         e -> assertThat(e.getErrorCode()).isEqualTo(ErrorCode.MATCH_CONFLICT));

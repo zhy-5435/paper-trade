@@ -1,21 +1,17 @@
 package com.stocksim.settlement.service;
 
-import com.stocksim.account.service.AccountService;
 import com.stocksim.common.BizException;
 import com.stocksim.common.cache.RedisCacheClient;
 import com.stocksim.common.lock.LockProvider;
-import com.stocksim.match.engine.MatchEngine;
 import com.stocksim.order.mapper.TradeOrderMapper;
-import com.stocksim.order.service.OrderService;
+import com.stocksim.order.service.impl.OrderCancelService;
 import com.stocksim.position.mapper.UserPositionMapper;
-import com.stocksim.position.service.PositionService;
 import com.stocksim.stock.mapper.StockInfoMapper;
 import com.stocksim.stock.mapper.StockQuoteMapper;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
 import org.mockito.Mock;
 import org.mockito.junit.jupiter.MockitoExtension;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.locks.Lock;
@@ -36,19 +32,11 @@ class SettlementLeaderLockTest {
     @Mock
     private UserPositionMapper userPositionMapper;
     @Mock
-    private AccountService accountService;
-    @Mock
-    private PositionService positionService;
-    @Mock
-    private OrderService orderService;
-    @Mock
-    private MatchEngine matchEngine;
-    @Mock
-    private TransactionTemplate transactionTemplate;
-    @Mock
     private RedisCacheClient cacheClient;
     @Mock
     private LockProvider lockProvider;
+    @Mock
+    private OrderCancelService orderCancelService;
     @Mock
     private Lock leader;
 
@@ -57,8 +45,7 @@ class SettlementLeaderLockTest {
         when(lockProvider.settlementLeaderLock()).thenReturn(leader);
         when(leader.tryLock(0, TimeUnit.SECONDS)).thenReturn(false);
         SettlementService service = new SettlementService(tradeOrderMapper, stockQuoteMapper, stockInfoMapper,
-                userPositionMapper, accountService, positionService, orderService, matchEngine,
-                transactionTemplate, cacheClient, lockProvider);
+                userPositionMapper, cacheClient, lockProvider, orderCancelService);
 
         assertThatThrownBy(service::run)
                 .isInstanceOf(BizException.class)

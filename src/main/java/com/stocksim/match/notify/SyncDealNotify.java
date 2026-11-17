@@ -130,7 +130,7 @@ public class SyncDealNotify implements DealNotify {
             update.setFrozenQty(order.getFrozenQty() - qty);
         }
         int toStatus = full ? OrderStateMachine.FILLED : OrderStateMachine.PARTIAL_FILLED;
-        if (!orderService.casTransit(order, toStatus, update)) {
+        if (!orderService.casTransit(order, toStatus, update, 1, null)) {
             throw new BizException(ErrorCode.MATCH_CONFLICT, "订单CAS冲突，待重试");
         }
     }

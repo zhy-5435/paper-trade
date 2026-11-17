@@ -2,22 +2,18 @@ package com.stocksim.settlement.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
-import com.stocksim.account.service.AccountService;
 import com.stocksim.common.BizException;
-import com.stocksim.common.BizNoGenerator;
 import com.stocksim.common.ErrorCode;
 import com.stocksim.common.TradeCalendar;
 import com.stocksim.common.cache.CacheKeys;
 import com.stocksim.common.cache.RedisCacheClient;
 import com.stocksim.common.lock.LockProvider;
-import com.stocksim.match.engine.MatchEngine;
 import com.stocksim.order.entity.TradeOrder;
 import com.stocksim.order.mapper.TradeOrderMapper;
-import com.stocksim.order.service.OrderService;
+import com.stocksim.order.service.impl.OrderCancelService;
 import com.stocksim.order.util.OrderStateMachine;
 import com.stocksim.position.entity.UserPosition;
 import com.stocksim.position.mapper.UserPositionMapper;
-import com.stocksim.position.service.PositionService;
 import com.stocksim.settlement.dto.SettlementResult;
 import com.stocksim.stock.entity.StockInfo;
 import com.stocksim.stock.entity.StockQuote;
@@ -27,7 +23,6 @@ import com.stocksim.stock.util.PriceLimits;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
-import org.springframework.transaction.support.TransactionTemplate;
 
 import java.math.BigDecimal;
 import java.time.LocalDate;
@@ -41,43 +36,33 @@ import java.util.stream.Collectors;
 /**
  * 第一轮最小日切（R1规划§6.8，幂等可重跑 P6）：过期撤单解冻 → 行情日切 → T+1 清零。
  * 本轮唯一实现类，第四轮原地扩展七步（不搬家、不写 settlement_batch）。
+ * R2：过期撤单改走 OrderCancelService 撤单核心（Q3 在途检查 + Q12 trade_date<= 扫描）。
  */
 @Service
 public class SettlementService {
 
     private static final Logger log = LoggerFactory.getLogger(SettlementService.class);
     private static final int MAX_CAS_RETRY = 3;
-    private static final int DIRECTION_BUY = 1;
 
     private final TradeOrderMapper tradeOrderMapper;
     private final StockQuoteMapper stockQuoteMapper;
     private final StockInfoMapper stockInfoMapper;
     private final UserPositionMapper userPositionMapper;
-    private final AccountService accountService;
-    private final PositionService positionService;
-    private final OrderService orderService;
-    private final MatchEngine matchEngine;
-    private final TransactionTemplate transactionTemplate;
     private final RedisCacheClient cacheClient;
     private final LockProvider lockProvider;
+    private final OrderCancelService orderCancelService;
 
     public SettlementService(TradeOrderMapper tradeOrderMapper, StockQuoteMapper stockQuoteMapper,
                              StockInfoMapper stockInfoMapper, UserPositionMapper userPositionMapper,
-                             AccountService accountService, PositionService positionService,
-                             OrderService orderService, MatchEngine matchEngine,
-                             TransactionTemplate transactionTemplate, RedisCacheClient cacheClient,
-                             LockProvider lockProvider) {
+                             RedisCacheClient cacheClient, LockProvider lockProvider,
+                             OrderCancelService orderCancelService) {
         this.tradeOrderMapper = tradeOrderMapper;
         this.stockQuoteMapper = stockQuoteMapper;
         this.stockInfoMapper = stockInfoMapper;
         this.userPositionMapper = userPositionMapper;
-        this.accountService = accountService;
-        this.positionService = positionService;
-        this.orderService = orderService;
-        this.matchEngine = matchEngine;
-        this.transactionTemplate = transactionTemplate;
         this.cacheClient = cacheClient;
         this.lockProvider = lockProvider;
+        this.orderCancelService = orderCancelService;
     }
 
     public SettlementResult run() {
@@ -118,66 +103,20 @@ public class SettlementService {
         return quote == null ? null : quote.getTradeDate();
     }
 
-    /** 步骤1：按 idx_trade_date_status 扫收盘日未成交完订单，逐单股票锁内过期解冻 */
+    /** 步骤1：扫 trade_date<=收盘日 的未成交完订单（Q12 防日切后缓存旧日期下单永不过期），逐单走撤单核心。 */
     private int expireOrders(LocalDate closeDate) {
         List<TradeOrder> openOrders = tradeOrderMapper.selectList(
                 new LambdaQueryWrapper<TradeOrder>()
-                        .eq(TradeOrder::getTradeDate, closeDate)
+                        .le(TradeOrder::getTradeDate, closeDate)
                         .in(TradeOrder::getStatus, OrderStateMachine.PENDING, OrderStateMachine.PARTIAL_FILLED)
                         .orderByAsc(TradeOrder::getStockCode, TradeOrder::getId));
         int expired = 0;
         for (TradeOrder order : openOrders) {
-            if (expireOne(order.getOrderNo(), order.getStockCode(), closeDate)) {
+            if (orderCancelService.expireOne(order.getOrderNo(), order.getStockCode())) {
                 expired++;
             }
         }
         return expired;
-    }
-
-    private boolean expireOne(String orderNo, String stockCode, LocalDate closeDate) {
-        Lock lock = matchEngine.lockOf(stockCode);
-        lock.lock();
-        try {
-            for (int attempt = 0; attempt < MAX_CAS_RETRY; attempt++) {
-                try {
-                    Boolean expired = transactionTemplate.execute(status -> {
-                        TradeOrder order = tradeOrderMapper.selectOne(
-                                new LambdaQueryWrapper<TradeOrder>().eq(TradeOrder::getOrderNo, orderNo));
-                        if (order == null || !isOpen(order) || !closeDate.equals(order.getTradeDate())) {
-                            return false;
-                        }
-                        if (order.getDirection() == DIRECTION_BUY) {
-                            if (order.getFrozenAmount().signum() > 0) {
-                                accountService.unfreeze(order.getUserId(), order.getFrozenAmount(),
-                                        BizNoGenerator.cancelFund(orderNo), orderNo);
-                            }
-                        } else if (order.getFrozenQty() > 0) {
-                            positionService.unfreeze(order.getUserId(), stockCode, order.getFrozenQty(),
-                                    BizNoGenerator.cancelPosition(orderNo), orderNo);
-                        }
-                        TradeOrder update = new TradeOrder();
-                        update.setRejectReason("日切过期撤单");
-                        if (!orderService.casTransit(order, OrderStateMachine.EXPIRED, update)) {
-                            throw new BizException(ErrorCode.SYSTEM_BUSY, "订单CAS冲突，待重试");
-                        }
-                        return true;
-                    });
-                    if (Boolean.TRUE.equals(expired)) {
-                        matchEngine.bookOf(stockCode).remove(orderNo);
-                        return true;
-                    }
-                    return false;
-                } catch (BizException e) {
-                    if (e.getErrorCode() == ErrorCode.SYSTEM_BUSY) {
-                        continue;
-                    }
-                    throw e;
-                }
-            }
-            throw new BizException(ErrorCode.SYSTEM_BUSY, "日切撤单并发冲突: " + orderNo);
-        } finally {
-            lock.unlock();
-        }
     }
 
     /** 步骤2：逐股 WHERE trade_date=收盘日 日切，version CAS，已日切不再命中（幂等） */
@@ -231,10 +170,5 @@ public class SettlementService {
         return userPositionMapper.update(null, new LambdaUpdateWrapper<UserPosition>()
                 .gt(UserPosition::getTodayBuyQty, 0)
                 .set(UserPosition::getTodayBuyQty, 0));
-    }
-
-    private static boolean isOpen(TradeOrder order) {
-        return order.getStatus() == OrderStateMachine.PENDING
-                || order.getStatus() == OrderStateMachine.PARTIAL_FILLED;
     }
 }

@@ -13,9 +13,11 @@ import com.stocksim.common.lock.LocalLockProvider;
 import com.stocksim.match.book.BookOrder;
 import com.stocksim.match.book.InMemoryOrderBook;
 import com.stocksim.match.engine.MatchEngine;
+import com.stocksim.match.mapper.DealRecordMapper;
 import com.stocksim.order.entity.TradeOrder;
 import com.stocksim.order.mapper.TradeOrderMapper;
 import com.stocksim.order.service.OrderService;
+import com.stocksim.order.service.impl.OrderCancelService;
 import com.stocksim.order.util.OrderStateMachine;
 import com.stocksim.position.entity.UserPosition;
 import com.stocksim.position.mapper.UserPositionMapper;
@@ -42,13 +44,13 @@ import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
 import java.util.Map;
-import java.util.concurrent.locks.ReentrantLock;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.catchThrowable;
 import static org.mockito.ArgumentMatchers.any;
 import static org.mockito.ArgumentMatchers.anyInt;
 import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.lenient;
 import static org.mockito.Mockito.never;
@@ -84,6 +86,8 @@ class SettlementServiceTest {
     private TransactionTemplate transactionTemplate;
     @Mock
     private RedisCacheClient cacheClient;
+    @Mock
+    private DealRecordMapper dealRecordMapper;
 
     private InMemoryOrderBook book;
     private SettlementService service;
@@ -98,17 +102,19 @@ class SettlementServiceTest {
     @BeforeEach
     void setUp() {
         book = new InMemoryOrderBook();
+        OrderCancelService cancelService = new OrderCancelService(tradeOrderMapper, dealRecordMapper,
+                accountService, positionService, orderService, matchEngine, transactionTemplate,
+                new LocalLockProvider());
         service = new SettlementService(tradeOrderMapper, stockQuoteMapper, stockInfoMapper,
-                userPositionMapper, accountService, positionService, orderService, matchEngine,
-                transactionTemplate, cacheClient, new LocalLockProvider());
+                userPositionMapper, cacheClient, new LocalLockProvider(), cancelService);
         lenient().when(transactionTemplate.execute(any())).thenAnswer(inv -> {
             TransactionCallback<?> callback = inv.getArgument(0);
             return callback.doInTransaction(new SimpleTransactionStatus());
         });
-        lenient().when(matchEngine.lockOf(any())).thenReturn(new ReentrantLock());
         lenient().when(matchEngine.bookOf(any())).thenReturn(book);
-        lenient().when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class)))
+        lenient().when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class), anyInt(), any()))
                 .thenReturn(true);
+        lenient().when(dealRecordMapper.sumDealQtyByOrderNo(any())).thenReturn(0L);
     }
 
     private StockQuote quote(LocalDate tradeDate) {
@@ -205,7 +211,7 @@ class SettlementServiceTest {
         assertThat(book.contains("B1")).isFalse();
 
         ArgumentCaptor<TradeOrder> update = ArgumentCaptor.forClass(TradeOrder.class);
-        verify(orderService).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), update.capture());
+        verify(orderService).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), update.capture(), eq(3), isNull());
         assertThat(update.getValue().getRejectReason()).isEqualTo("日切过期撤单");
 
         ArgumentCaptor<LambdaUpdateWrapper<StockQuote>> quoteUpdate =
@@ -268,7 +274,7 @@ class SettlementServiceTest {
 
         assertThat(result.expiredOrders()).isEqualTo(1);
         verify(accountService).unfreeze(2L, new BigDecimal("1002.50"), "B1C4", "B1");
-        verify(orderService).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), any(TradeOrder.class));
+        verify(orderService).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), any(TradeOrder.class), anyInt(), any());
     }
 
     @Test
@@ -283,7 +289,7 @@ class SettlementServiceTest {
 
         assertThat(result.expiredOrders()).isZero();
         verifyNoInteractions(accountService, positionService);
-        verify(orderService, never()).casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class));
+        verify(orderService, never()).casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class), anyInt(), any());
     }
 
     @Test
@@ -355,7 +361,7 @@ class SettlementServiceTest {
 
         assertThat(result.expiredOrders()).isEqualTo(1);
         verify(accountService, times(2)).unfreeze(2L, new BigDecimal("1000.00"), "B1C4", "B1");
-        verify(orderService, times(1)).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), any(TradeOrder.class));
+        verify(orderService, times(1)).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), any(TradeOrder.class), anyInt(), any());
         assertThat(book.contains("B1")).isFalse();
     }
 
@@ -365,13 +371,13 @@ class SettlementServiceTest {
         when(stockQuoteMapper.selectOne(any())).thenReturn(quote(D));
         when(tradeOrderMapper.selectList(any())).thenReturn(List.of(order));
         when(tradeOrderMapper.selectOne(any())).thenReturn(order);
-        when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class)))
+        when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class), anyInt(), any()))
                 .thenReturn(false, true);
 
         SettlementResult result = service.run();
 
         assertThat(result.expiredOrders()).isEqualTo(1);
-        verify(orderService, times(2)).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), any(TradeOrder.class));
+        verify(orderService, times(2)).casTransit(any(TradeOrder.class), eq(OrderStateMachine.EXPIRED), any(TradeOrder.class), anyInt(), any());
         verify(accountService, times(2)).unfreeze(2L, new BigDecimal("1000.00"), "B1C4", "B1");
     }
 

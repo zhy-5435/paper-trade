@@ -15,8 +15,10 @@ import com.stocksim.common.lock.LockProvider;
 import com.stocksim.common.properties.TradeProperties;
 import com.stocksim.order.dto.CreateOrderRequest;
 import com.stocksim.order.dto.OrderResponse;
+import com.stocksim.order.entity.OrderStatusLog;
 import com.stocksim.order.entity.TradeOrder;
 import com.stocksim.order.event.OrderCreatedEvent;
+import com.stocksim.order.mapper.OrderStatusLogMapper;
 import com.stocksim.order.mapper.TradeOrderMapper;
 import com.stocksim.order.service.OrderService;
 import com.stocksim.order.util.FeeCalculator;
@@ -56,12 +58,14 @@ public class OrderServiceImpl implements OrderService {
     private final TransactionTemplate transactionTemplate;
     private final ApplicationEventPublisher eventPublisher;
     private final LockProvider lockProvider;
+    private final OrderStatusLogMapper orderStatusLogMapper;
 
     public OrderServiceImpl(TradeOrderMapper tradeOrderMapper, StockService stockService, QuoteService quoteService,
                             AccountService accountService, PositionService positionService,
                             FeeCalculator feeCalculator, BizNoGenerator bizNoGenerator,
                             TradeProperties tradeProperties, TransactionTemplate transactionTemplate,
-                            ApplicationEventPublisher eventPublisher, LockProvider lockProvider) {
+                            ApplicationEventPublisher eventPublisher, LockProvider lockProvider,
+                            OrderStatusLogMapper orderStatusLogMapper) {
         this.tradeOrderMapper = tradeOrderMapper;
         this.stockService = stockService;
         this.quoteService = quoteService;
@@ -73,6 +77,7 @@ public class OrderServiceImpl implements OrderService {
         this.transactionTemplate = transactionTemplate;
         this.eventPublisher = eventPublisher;
         this.lockProvider = lockProvider;
+        this.orderStatusLogMapper = orderStatusLogMapper;
     }
 
     @Override
@@ -171,12 +176,22 @@ public class OrderServiceImpl implements OrderService {
     }
 
     @Override
-    public boolean casTransit(TradeOrder current, int toStatus, TradeOrder update) {
+    public boolean casTransit(TradeOrder current, int toStatus, TradeOrder update, int changeType, Long operatorId) {
         OrderStateMachine.assertTransit(current.getStatus(), toStatus);
         update.setId(current.getId());
         update.setVersion(current.getVersion());
         update.setStatus(toStatus);
-        return tradeOrderMapper.updateById(update) > 0;
+        boolean ok = tradeOrderMapper.updateById(update) > 0;
+        if (ok) {
+            OrderStatusLog statusLog = new OrderStatusLog();
+            statusLog.setOrderNo(current.getOrderNo());
+            statusLog.setFromStatus(current.getStatus());
+            statusLog.setToStatus(toStatus);
+            statusLog.setChangeType(changeType);
+            statusLog.setOperatorId(operatorId);
+            orderStatusLogMapper.insert(statusLog);
+        }
+        return ok;
     }
 
     private OrderResponse doCreateOrder(Long userId, CreateOrderRequest request, QuoteResponse quote,

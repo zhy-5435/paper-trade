@@ -7,6 +7,7 @@ import com.stocksim.common.BizNoGenerator;
 import com.stocksim.common.lock.LockProvider;
 import com.stocksim.common.properties.TradeProperties;
 import com.stocksim.order.dto.CreateOrderRequest;
+import com.stocksim.order.mapper.OrderStatusLogMapper;
 import com.stocksim.order.mapper.TradeOrderMapper;
 import com.stocksim.order.util.FeeCalculator;
 import com.stocksim.position.service.PositionService;
@@ -55,6 +56,8 @@ class OrderServiceLockTest {
     @Mock
     private LockProvider lockProvider;
     @Mock
+    private OrderStatusLogMapper orderStatusLogMapper;
+    @Mock
     private Lock lock;
 
     @Test
@@ -62,7 +65,7 @@ class OrderServiceLockTest {
         TradeProperties tradeProperties = new TradeProperties();
         OrderServiceImpl service = new OrderServiceImpl(tradeOrderMapper, stockService, quoteService,
                 accountService, positionService, new FeeCalculator(tradeProperties), bizNoGenerator,
-                tradeProperties, transactionTemplate, eventPublisher, lockProvider);
+                tradeProperties, transactionTemplate, eventPublisher, lockProvider, orderStatusLogMapper);
         when(tradeOrderMapper.selectOne(any())).thenReturn(null);
         when(stockService.getStock("600000")).thenReturn(new StockResponse("600000", "浦发银行", 1, 1,
                 new BigDecimal("10.00"), new BigDecimal("0.10"), 100, 1, LocalDate.of(2020, 1, 1)));
