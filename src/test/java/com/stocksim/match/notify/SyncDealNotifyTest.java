@@ -1,5 +1,6 @@
 package com.stocksim.match.notify;
 
+import com.stocksim.account.mapper.FundFlowMapper;
 import com.stocksim.account.service.AccountService;
 import com.stocksim.common.BizException;
 import com.stocksim.common.ErrorCode;
@@ -9,6 +10,8 @@ import com.stocksim.match.entity.DealOrderDaily;
 import com.stocksim.match.entity.DealRecord;
 import com.stocksim.match.mapper.DealOrderDailyMapper;
 import com.stocksim.match.mapper.DealRecordMapper;
+import com.stocksim.match.service.DealBookingService;
+import com.stocksim.match.service.DealFactService;
 import com.stocksim.order.entity.TradeOrder;
 import com.stocksim.order.mapper.TradeOrderMapper;
 import com.stocksim.order.service.OrderService;
@@ -57,14 +60,18 @@ class SyncDealNotifyTest {
     private PositionService positionService;
     @Mock
     private QuoteService quoteService;
+    @Mock
+    private FundFlowMapper fundFlowMapper;
 
     private SyncDealNotify notify;
 
     @BeforeEach
     void setUp() {
         FeeCalculator feeCalculator = new FeeCalculator(new TradeProperties());
-        notify = new SyncDealNotify(tradeOrderMapper, dealRecordMapper, dealOrderDailyMapper,
-                orderService, accountService, positionService, quoteService, feeCalculator);
+        DealBookingService bookingService = new DealBookingService(tradeOrderMapper, dealOrderDailyMapper,
+                fundFlowMapper, orderService, accountService, positionService, feeCalculator);
+        DealFactService dealFactService = new DealFactService(dealRecordMapper, quoteService);
+        notify = new SyncDealNotify(bookingService, dealFactService);
         lenient().when(orderService.casTransit(any(TradeOrder.class), anyInt(), any(TradeOrder.class), anyInt(), any()))
                 .thenReturn(true);
     }

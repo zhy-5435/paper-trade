@@ -61,7 +61,8 @@ public class MatchEngine {
         this.lockProvider = lockProvider;
     }
 
-    /** 启动重建（R1规划§6.7）：deal_seq 取 DB MAX，未成交完的挂单按 create_time 入盘，不重放记账 */
+    /** 启动重建（R1规划§6.7、R2 Q6）：deal_seq 取 DB MAX，未成交完的挂单按 create_time 入盘，不重放记账。
+     *  剩余数量 = entrust_qty − Σdeal_record.deal_qty（权威），异步下已落库未记账的成交不二次入盘。 */
     @PostConstruct
     public void rebuild() {
         Long max = dealRecordMapper.selectMaxDealSeq();
@@ -69,12 +70,16 @@ public class MatchEngine {
         List<TradeOrder> openOrders = tradeOrderMapper.selectList(
                 new LambdaQueryWrapper<TradeOrder>()
                         .in(TradeOrder::getStatus, OrderStateMachine.PENDING, OrderStateMachine.PARTIAL_FILLED)
-                        .apply("entrust_qty > matched_qty")
                         .orderByAsc(TradeOrder::getStockCode, TradeOrder::getCreateTime, TradeOrder::getId));
+        int restored = 0;
         for (TradeOrder order : openOrders) {
-            bookOf(order.getStockCode()).add(toBookOrder(order));
+            BookOrder bookOrder = toBookOrder(order);
+            if (bookOrder != null) {
+                bookOf(order.getStockCode()).add(bookOrder);
+                restored++;
+            }
         }
-        log.info("盘口重建完成: 挂单 {} 笔, dealSeq={}", openOrders.size(), dealSeq.current());
+        log.info("盘口重建完成: 挂单 {} 笔, dealSeq={}", restored, dealSeq.current());
     }
 
     @TransactionalEventListener(phase = TransactionPhase.AFTER_COMMIT)
@@ -105,8 +110,11 @@ public class MatchEngine {
             if (!book.contains(orderNo)) {
                 TradeOrder order = tradeOrderMapper.selectOne(
                         new LambdaQueryWrapper<TradeOrder>().eq(TradeOrder::getOrderNo, orderNo));
-                if (order != null && isOpen(order) && order.getEntrustQty() > order.getMatchedQty()) {
-                    book.add(toBookOrder(order));
+                if (order != null && isOpen(order)) {
+                    BookOrder bookOrder = toBookOrder(order);
+                    if (bookOrder != null) {
+                        book.add(bookOrder);
+                    }
                 }
             }
             matchLoop(stockCode, book);
@@ -186,10 +194,14 @@ public class MatchEngine {
                 || order.getStatus() == OrderStateMachine.PARTIAL_FILLED;
     }
 
-    private static BookOrder toBookOrder(TradeOrder order) {
+    /** Q6：剩余数量以 deal_record 为权威（entrust_qty − Σdeal_qty），剩余=0 不入盘（返回 null） */
+    private BookOrder toBookOrder(TradeOrder order) {
+        long remain = order.getEntrustQty() - dealRecordMapper.sumDealQtyByOrderNo(order.getOrderNo());
+        if (remain <= 0) {
+            return null;
+        }
         return new BookOrder(order.getId(), order.getOrderNo(), order.getUserId(), order.getStockCode(),
-                order.getDirection(), order.getEntrustPrice(),
-                order.getEntrustQty() - order.getMatchedQty(), order.getCreateTime());
+                order.getDirection(), order.getEntrustPrice(), remain, order.getCreateTime());
     }
 
     public Lock lockOf(String stockCode) {

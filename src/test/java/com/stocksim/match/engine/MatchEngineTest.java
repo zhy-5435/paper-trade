@@ -235,6 +235,8 @@ class MatchEngineTest {
         TradeOrder buy = tradeOrder(1, "B1", 1L, 1, "10.00", 200, 100);
         TradeOrder sell = tradeOrder(2, "S1", 2L, 2, "9.90", 100, 0);
         when(tradeOrderMapper.selectList(any())).thenReturn(List.of(buy, sell));
+        // Q6：剩余以 deal_record 为权威，买已成交 100 → 剩余 100；卖未成交 → 剩余 100
+        when(dealRecordMapper.sumDealQtyByOrderNo("B1")).thenReturn(100L);
         engine.rebuild();
         assertThat(dealSeq.current()).isEqualTo(50);
         assertThat(dealSeq.committed()).isEqualTo(50);

@@ -66,8 +66,8 @@ stocksim:
     refresh-interval-ms: 3000
     walk-step-ratio: 0.002
   deal:
-    # 成交回报实现切换：sync|mq（Q11）。M0 先置 sync 保第一轮基线不变，M4 起默认 mq
-    notify: sync
+    # 成交回报实现切换：sync|mq（Q11）。M4 起默认 mq；切回 sync 走第一轮同步基线
+    notify: mq
   cache:
     quote-ttl-ms: 3000
     quote-ttl-jitter-ms: 1000

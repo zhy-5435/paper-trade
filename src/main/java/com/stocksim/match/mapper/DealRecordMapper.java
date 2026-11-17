@@ -15,4 +15,7 @@ public interface DealRecordMapper extends BaseMapper<DealRecord> {
     @Select("SELECT COALESCE(SUM(deal_qty), 0) FROM deal_record "
             + "WHERE buyer_order_no = #{orderNo} OR seller_order_no = #{orderNo}")
     long sumDealQtyByOrderNo(@Param("orderNo") String orderNo);
+
+    @Select("SELECT COUNT(1) FROM deal_record WHERE deal_no = #{dealNo}")
+    int countByDealNo(@Param("dealNo") String dealNo);
 }
